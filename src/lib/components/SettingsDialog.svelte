@@ -4,12 +4,13 @@
   import { settings, ACCENTS, FONT_FAMILIES, type Accent, type Settings } from "#lib/settings.svelte.ts";
   import { assistant, PROVIDERS } from "#lib/assistant.svelte.ts";
   import { models } from "#lib/models.svelte.ts";
-  import { studio, EXPORT_PRESETS } from "#lib/studio.svelte.ts";
+  import { studio, EXPORT_PRESETS, ASPECTS } from "#lib/studio.svelte.ts";
   import { api, type Provider } from "#lib/api.ts";
   import { ui } from "#lib/ui.svelte.ts";
   import Icon from "./Icon.svelte";
   import Picker from "./Picker.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import LICENSES from "#lib/licenses.json";
 
   let dialog: HTMLDialogElement;
   const v = $derived(settings.value);
@@ -20,6 +21,7 @@
     { id: "accounts", label: "Accounts", icon: "user" },
     { id: "assistant", label: "Assistant", icon: "sparkle" },
     { id: "rendering", label: "Rendering", icon: "bolt" },
+    { id: "packages", label: "Python packages", icon: "terminal" },
     { id: "export", label: "Export", icon: "export" },
     { id: "timeline", label: "Timeline", icon: "film" },
     { id: "shortcuts", label: "Shortcuts", icon: "terminal" },
@@ -28,7 +30,7 @@
   ];
 
   const REPO = "https://github.com/dagmawibabi/ManimPro";
-  const SITE = "https://manim.dagmawi.dev";
+  const SITE = "https://manimpro.dagmawi.dev";
 
   const RESOURCES: { title: string; links: { label: string; sub: string; url: string }[] }[] = [
     {
@@ -52,7 +54,7 @@
       title: "ManimPro",
       links: [
         { label: "ManimPro on GitHub", sub: "Open source: code, issues and releases", url: REPO },
-        { label: "manim.dagmawi.dev", sub: "The ManimPro website", url: SITE },
+        { label: "manimpro.dagmawi.dev", sub: "The ManimPro website", url: SITE },
       ],
     },
   ];
@@ -127,6 +129,65 @@
     else assistant.refresh(id as Provider);
   }
 
+  let root = $state<import("#lib/api.ts").RootInfo | null>(null);
+  let rootError = $state<string | null>(null);
+  onMount(() => {
+    api.getProjectsRoot().then((r) => (root = r)).catch((e) => (rootError = String(e)));
+  });
+
+  async function setRoot(path: string | null) {
+    rootError = null;
+    try {
+      root = await api.setProjectsRoot(path);
+    } catch (e) {
+      rootError = String(e);
+    }
+  }
+
+  async function chooseRoot() {
+    const dir = await openDialog({ directory: true, title: "Where should new projects go?", defaultPath: root?.path });
+    if (typeof dir === "string") await setRoot(dir);
+  }
+
+  // ------------------------------------------------------------ python packages
+  let pkgs = $state<import("#lib/api.ts").PythonPackage[] | null>(null);
+  let pkgDir = $state("");
+  let pkgSpec = $state("");
+  let pkgBusy = $state<string | null>(null);
+  let pkgError = $state<string | null>(null);
+
+  async function loadPackages() {
+    try {
+      const r = await api.packagesList();
+      pkgs = r.packages ?? [];
+      pkgDir = r.dir ?? "";
+    } catch (e) {
+      pkgError = String(e);
+    }
+  }
+
+  async function pkgAction(kind: "install" | "remove", name: string) {
+    pkgBusy = kind === "install" ? "install" : name;
+    pkgError = null;
+    try {
+      const r = kind === "install" ? await api.packagesInstall(name) : await api.packagesRemove(name);
+      if (!r.ok) pkgError = r.error ?? "Something went wrong.";
+      else {
+        pkgs = r.packages ?? [];
+        if (kind === "install") pkgSpec = "";
+        await api.restartWorker(); // new imports are picked up by a fresh render engine
+      }
+    } catch (e) {
+      pkgError = String(e);
+    } finally {
+      pkgBusy = null;
+    }
+  }
+
+  $effect(() => {
+    if (settings.section === "packages" && pkgs === null) loadPackages();
+  });
+
   async function chooseFolder() {
     const dir = await openDialog({ directory: true, title: "Default export folder" });
     if (typeof dir === "string") settings.set("exportFolder", dir);
@@ -134,6 +195,7 @@
 
   function set<K extends keyof Settings>(k: K, value: Settings[K]) {
     settings.set(k, value);
+    if (k === "frameFit") studio.rerenderAll();
   }
 
   const SHORTCUTS = [
@@ -145,6 +207,8 @@
     ["Esc", "Leave full screen"],
     ["Space", "Play / pause"],
     ["S", "Split clip at playhead"],
+    ["Ctrl + Z", "Undo a timeline edit"],
+    ["Ctrl + Y / Ctrl + Shift + Z", "Redo"],
     ["Delete", "Delete selected clip"],
     ["← / →", "Step one frame (Shift: one second)"],
     ["Ctrl + scroll", "Zoom the timeline"],
@@ -192,24 +256,6 @@
         <div class="group">
           <h4>Appearance</h4>
           {@render segmented("uiScale", "Interface size", [90, 100, 110, 125].map((n) => ({ value: n, label: `${n}%` })))}
-          {@render segmented(
-            "sidebarSide",
-            "Project and chats panel",
-            [{ value: "left", label: "Left" }, { value: "right", label: "Right" }],
-            "Right swaps it with the code panel.",
-          )}
-          {@render segmented(
-            "editorLayout",
-            "Editor layout",
-            [{ value: "code-center", label: "Code in the middle" }, { value: "preview-center", label: "Preview in the middle" }],
-            "Preview in the middle puts Code and Assistant on the right.",
-          )}
-          {@render segmented(
-            "fullHeight",
-            "Full-height panel",
-            [{ value: "none", label: "None" }, { value: "project", label: "Project" }, { value: "code", label: "Code" }],
-            "Runs that panel down to the bottom of the window; the timeline sits under the preview instead.",
-          )}
           <div class="row">
             <span class="text"><span class="label">Accent color</span><span class="hint">Used for the playhead, selection and main buttons.</span></span>
             <div class="swatches" role="radiogroup" aria-label="Accent color">
@@ -228,12 +274,57 @@
             </div>
           </div>
           {@render toggle("reduceMotion", "Reduce motion", "Turns off interface animations. Your videos are not affected.")}
+        </div>
+        <div class="group">
+          <h4>Editor layout</h4>
+          {@render segmented(
+            "sidebarSide",
+            "Project and chats panel",
+            [{ value: "left", label: "Left" }, { value: "right", label: "Right" }],
+            "Right swaps it with the code panel.",
+          )}
+          {@render segmented(
+            "editorLayout",
+            "Middle panel",
+            [{ value: "code-center", label: "Code" }, { value: "preview-center", label: "Preview" }],
+            "Preview in the middle puts Code and Assistant on the outside.",
+          )}
+          {@render segmented(
+            "fullHeight",
+            "Full-height panel",
+            [{ value: "none", label: "None" }, { value: "project", label: "Project" }, { value: "code", label: "Code" }],
+            "Runs that panel down to the bottom of the window; the timeline sits under the preview instead.",
+          )}
           {@render toggle("showStatusBar", "Show status bar", "Render engine status, LaTeX and the render log.")}
         </div>
         <div class="group">
-          <h4>Behavior</h4>
+          <h4>Project panel</h4>
+          {@render segmented("sceneView", "Scenes", [{ value: "grid", label: "Grid" }, { value: "list", label: "List" }])}
+          {@render segmented("audioView", "Audio", [{ value: "grid", label: "Grid" }, { value: "list", label: "List" }])}
+        </div>
+        <div class="group">
+          <h4>Projects</h4>
+          <div class="row">
+            <span class="text">
+              <span class="label">New projects are saved in</span>
+              <span class="hint path">{root?.path ?? "…"}</span>
+              {#if root?.onedrive}
+                <span class="hint warn">This folder syncs to OneDrive. Renders can take a lot of space there; a folder outside OneDrive avoids that.</span>
+              {/if}
+              {#if rootError}<span class="error">{rootError}</span>{/if}
+            </span>
+            <div class="actions">
+              {#if root?.onedrive}<button class="btn ghost" onclick={() => setRoot(root!.local)}>Use {root.local}</button>{/if}
+              {#if root && root.path !== root.default && !root.onedrive}<button class="btn ghost" onclick={() => setRoot(null)}>Use Documents</button>{/if}
+              <button class="btn" onclick={chooseRoot}><Icon name="folder" size={13} /> Choose</button>
+            </div>
+          </div>
+          <p class="note">Existing projects stay where they are and keep working; open them from Recent or with Open folder.</p>
+        </div>
+        <div class="group">
+          <h4>Home page and startup</h4>
+          {@render toggle("hoverPreviews", "Play previews on hover", "Rest the pointer on a project or template to watch it.")}
           {@render toggle("openLastProject", "Open the last project on launch", "Skip the home page and continue where you left off.")}
-          {@render toggle("confirmDelete", "Ask before deleting clips")}
         </div>
       {:else if settings.section === "editor"}
         <div class="group">
@@ -264,6 +355,12 @@
         <div class="group">
           <h4>Help while typing</h4>
           {@render toggle("manimCompletions", "Manim suggestions", "Suggests Manim classes, animations, colors and snippets.")}
+          {@render toggle("bracketColors", "Color matching brackets")}
+          {@render toggle("showWhitespace", "Show spaces and tabs", "Handy for spotting mixed indentation in Python.")}
+        </div>
+        <div class="group">
+          <h4>Saving</h4>
+          {@render toggle("autoSave", "Save automatically", "Saves a second after you stop typing. Rendering still waits for Ctrl + S or Render.")}
         </div>
       {:else if settings.section === "accounts"}
         <div class="group">
@@ -338,9 +435,24 @@
       {:else if settings.section === "rendering"}
         <div class="group">
           <h4>Previews</h4>
-          {@render segmented("previewQuality", "Preview quality", [{ value: "preview", label: "480p" }, { value: "draft", label: "720p" }, { value: "high", label: "1080p" }], "Lower is faster. Exports always re-render at full quality.")}
+          {@render segmented("previewQuality", "Preview quality", [{ value: "fast", label: "Fast" }, { value: "preview", label: "480p" }, { value: "draft", label: "720p" }, { value: "high", label: "1080p" }], "Fast is 360p at 12 fps, for quick checks. Exports always re-render at full quality.")}
           {@render toggle("renderOnSave", "Render on save", "Ctrl + S renders the scene under the cursor.")}
           {@render toggle("disableCache", "Always render from scratch", "Skips Manim's animation cache. Slower; use it if a preview looks stale.")}
+        </div>
+        <div class="group">
+          <h4>Frame</h4>
+          <div class="row">
+            <span class="text"><span class="label">Frame for new projects</span><span class="hint">Change a project's frame with Frame in the top bar.</span></span>
+            <div class="field">
+              <Picker label="Frame for new projects" variant="field" width={240} items={ASPECTS.map((a) => ({ value: a.id, label: a.id, sub: a.label }))} value={v.defaultAspect} onChange={(x) => set("defaultAspect", x as Settings["defaultAspect"])} />
+            </div>
+          </div>
+          {@render segmented(
+            "frameFit",
+            "Frames narrower than 16:9",
+            [{ value: "fit", label: "Fit the scene" }, { value: "fill", label: "Fill the frame" }],
+            "Fit keeps a scene laid out for 16:9 fully visible, with room above and below. Fill uses the frame's own size, so a 16:9 layout is cut at the sides.",
+          )}
         </div>
         <div class="group">
           <h4>Look</h4>
@@ -365,6 +477,43 @@
             <button class="btn" onclick={() => { close(); ui.latexOpen = true; }}>{studio.worker.latex ? "Details" : "Install"}</button>
           </div>
         </div>
+      {:else if settings.section === "packages"}
+        <div class="group">
+          <h4>Add a package</h4>
+          <p class="note">
+            For scenes that need more than Manim ships with, like <code>networkx</code>, <code>scipy</code> or <code>pandas</code>.
+            Packages come from PyPI and are shared by all projects. ManimPro's own Manim and NumPy versions are kept as they are.
+          </p>
+          <div class="key-row">
+            <input
+              placeholder="Package name, e.g. networkx or scipy>=1.12"
+              value={pkgSpec}
+              oninput={(e) => (pkgSpec = e.currentTarget.value)}
+              onkeydown={(e) => e.key === "Enter" && pkgSpec.trim() && !pkgBusy && pkgAction("install", pkgSpec.trim())}
+              aria-label="Package to install"
+            />
+            <button class="btn primary" disabled={!pkgSpec.trim() || !!pkgBusy} onclick={() => pkgAction("install", pkgSpec.trim())}>
+              {pkgBusy === "install" ? "Installing…" : "Install"}
+            </button>
+          </div>
+          {#if pkgError}<p class="error pkg-error">{pkgError}</p>{/if}
+        </div>
+        <div class="group">
+          <h4>Installed {pkgs ? `(${pkgs.length})` : ""}</h4>
+          {#if pkgs === null}
+            <p class="note">Loading…</p>
+          {:else if !pkgs.length}
+            <p class="note">No extra packages yet.</p>
+          {:else}
+            {#each pkgs as p (p.name)}
+              <div class="row compact">
+                <span class="text"><span class="label">{p.name} <span class="hint">{p.version}</span></span>{#if p.summary}<span class="hint">{p.summary}</span>{/if}</span>
+                <button class="btn ghost" disabled={!!pkgBusy} onclick={() => pkgAction("remove", p.name)}>{pkgBusy === p.name ? "Removing…" : "Remove"}</button>
+              </div>
+            {/each}
+          {/if}
+          {#if pkgDir}<p class="note">Stored in {pkgDir}</p>{/if}
+        </div>
       {:else if settings.section === "export"}
         <div class="group">
           <h4>Defaults</h4>
@@ -377,15 +526,23 @@
               <button class="btn" onclick={chooseFolder}><Icon name="folder" size={13} /> Choose</button>
             </div>
           </div>
+          {@render toggle("revealAfterExport", "Show the video in its folder when done")}
         </div>
       {:else if settings.section === "timeline"}
         <div class="group">
           <h4>Editing</h4>
           {@render toggle("snapping", "Snap to clip edges and the playhead")}
+          {@render toggle("rippleDelete", "Close gaps when deleting", "Deleting a scene clip pulls the clips after it back. Audio stays put.")}
+          {@render toggle("confirmDelete", "Ask before deleting clips")}
           <div class="row">
             <span class="text"><span class="label">Default zoom</span><span class="hint">{v.defaultZoom}px per second</span></span>
             <input type="range" min="12" max="160" step="4" value={v.defaultZoom} oninput={(e) => set("defaultZoom", +e.currentTarget.value)} aria-label="Default zoom" />
           </div>
+        </div>
+        <div class="group">
+          <h4>Display</h4>
+          {@render toggle("followPlayhead", "Follow the playhead", "Scrolls the timeline along while playing.")}
+          {@render toggle("showFilmstrips", "Frames on scene clips", "Shows frames from each render along its clip.")}
         </div>
       {:else if settings.section === "shortcuts"}
         <div class="group">
@@ -420,7 +577,7 @@
             </p>
             <div class="about-links">
               <button class="btn" onclick={() => openUrl(REPO)}><Icon name="link" size={13} /> github.com/dagmawibabi/ManimPro</button>
-              <button class="btn" onclick={() => openUrl(SITE)}><Icon name="link" size={13} /> manim.dagmawi.dev</button>
+              <button class="btn" onclick={() => openUrl(SITE)}><Icon name="link" size={13} /> manimpro.dagmawi.dev</button>
             </div>
           </div>
         </div>
@@ -436,6 +593,25 @@
           <h4>This install</h4>
           <div class="row compact"><span class="label">Render engine</span><span class="hint right">{studio.worker.status === "ready" ? "Ready" : studio.worker.status}</span></div>
           <div class="row compact"><span class="label">Manim</span><span class="hint right">{studio.worker.manim ?? "Not loaded yet"}</span></div>
+        </div>
+
+        <div class="group">
+          <h4>Open-source licences</h4>
+          <p class="note">ManimPro ships these components; each keeps its own licence. The same list is in THIRD-PARTY-NOTICES.md in the source code.</p>
+          {#each LICENSES.groups as g (g.title)}
+            <details class="lic">
+              <summary><span>{g.title}</span><span class="hint">{g.items.length}</span></summary>
+              <div class="lic-list">
+                {#each g.items as it (it.name + "@" + it.version)}
+                  <div class="lic-row" title={(it as { note?: string }).note ?? ""}>
+                    {#if it.url}<button class="lic-name" onclick={() => openUrl(it.url)}>{it.name}</button>{:else}<span class="lic-name">{it.name}</span>{/if}
+                    <span class="lic-ver">{it.version}</span>
+                    <span class="lic-id">{it.license}</span>
+                  </div>
+                {/each}
+              </div>
+            </details>
+          {/each}
         </div>
 
         <div class="group">
@@ -763,8 +939,73 @@
     padding: 8px 0;
   }
   .link-row + .link-row {
+    margin-top: 2px;
+  }
+  .lic {
     border-top: 1px solid var(--line);
-    border-radius: 0;
+  }
+  .lic summary {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 0;
+    cursor: pointer;
+    font-weight: 500;
+    list-style: none;
+  }
+  .lic summary::-webkit-details-marker {
+    display: none;
+  }
+  .lic summary::before {
+    content: "›";
+    margin-right: 8px;
+    color: var(--faint);
+    transition: transform 0.12s;
+  }
+  .lic[open] summary::before {
+    transform: rotate(90deg);
+  }
+  .lic summary span:first-of-type {
+    flex: 1;
+  }
+  .lic-list {
+    max-height: 260px;
+    overflow: auto;
+    padding-bottom: 10px;
+  }
+  .lic-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) 90px minmax(0, 1fr);
+    gap: 10px;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+  .lic-name {
+    text-align: left;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  button.lic-name:hover {
+    color: var(--accent);
+  }
+  .lic-ver,
+  .lic-id {
+    color: var(--faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pkg-error {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+  }
+  .hint.path {
+    word-break: break-all;
+    color: var(--muted);
+  }
+  .hint.warn {
+    color: #f1c26b;
   }
   .hint.right {
     text-align: right;
@@ -778,12 +1019,15 @@
     align-items: center;
     gap: 12px;
     width: 100%;
-    padding: 10px 8px;
-    margin: 0 -8px;
-    width: calc(100% + 16px);
-    border-radius: 10px;
+    padding: 10px 10px;
+    margin: 0 -10px;
+    width: calc(100% + 20px);
+    border-radius: 12px;
     text-align: left;
     color: var(--muted);
+  }
+  .link-row:last-child {
+    margin-bottom: 8px;
   }
   .link-row:hover {
     background: var(--raised);

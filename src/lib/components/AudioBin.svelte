@@ -7,6 +7,8 @@
   import { shortTime } from "#lib/time.ts";
   import Icon from "./Icon.svelte";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
+  import { voice } from "#lib/voice.svelte.ts";
+  import { ui } from "#lib/ui.svelte.ts";
 
   let { view }: { view: "grid" | "list" } = $props();
 
@@ -76,19 +78,28 @@
     }
   }
 
-  function itemMenu(e: MouseEvent, path: string) {
+  async function itemMenu(e: MouseEvent, path: string) {
     e.preventDefault();
+    const x = e.clientX;
+    const y = e.clientY;
+    const generated = !!(await voice.metaFor(path));
+    const uses = studio.audio.filter((a) => a.path === path).length;
     menu = {
-      x: e.clientX,
-      y: e.clientY,
+      x,
+      y,
       items: [
         { label: playing === path ? "Pause" : "Play", icon: playing === path ? "pauseFill" : "play", action: () => toggle(path) },
         { label: "Add to timeline at playhead", icon: "plus", action: () => studio.placeAudio(path) },
+        ...(generated
+          ? [{ label: "Edit voiceover", icon: "mic", hint: "Change the text or voice and regenerate", action: () => { ui.voiceEdit = { path }; ui.voiceOpen = true; } } as MenuItem]
+          : []),
         "separator",
-        { label: "Rename", icon: "pencil", action: () => (renaming = { path, value: basename(path).replace(/\.[^.]+$/, "") }) },
+        { label: "Rename", icon: "pencil", disabled: studio.locked, action: () => (renaming = { path, value: basename(path).replace(/\.[^.]+$/, "") }) },
         { label: "Show in folder", icon: "reveal", action: () => revealItemInDir(path) },
+        { label: "Copy path", icon: "copy", action: () => navigator.clipboard.writeText(path) },
         "separator",
-        { label: "Delete", icon: "trash", danger: true, action: () => remove(path) },
+        { label: "Remove from timeline", icon: "close", disabled: !uses, hint: uses ? `${uses} ${uses === 1 ? "clip" : "clips"}` : undefined, action: () => studio.removeAudioClips(path) },
+        { label: "Delete", icon: "trash", danger: true, disabled: studio.locked, hint: studio.locked ? "Not while the assistant is working" : undefined, action: () => remove(path) },
       ],
     };
   }

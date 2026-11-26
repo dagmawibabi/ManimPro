@@ -1,0 +1,69 @@
+{
+ "license": "CC0 1.0",
+ "tracks": [
+  {
+   "id": "calm-focus",
+   "title": "Calm focus",
+   "mood": "Soft pads and electric piano. Good under explanations.",
+   "bpm": 72,
+   "duration": 84.0,
+   "file": "calm-focus.mp3"
+  },
+  {
+   "id": "curious-mind",
+   "title": "Curious mind",
+   "mood": "Light plucked arpeggios. Questions, setups, first steps.",
+   "bpm": 96,
+   "duration": 84.0,
+   "file": "curious-mind.mp3"
+  },
+  {
+   "id": "discovery",
+   "title": "Discovery",
+   "mood": "Upbeat and bright, with a steady beat. Reveals and results.",
+   "bpm": 110,
+   "duration": 82.5,
+   "file": "discovery.mp3"
+  },
+  {
+   "id": "deep-thought",
+   "title": "Deep thought",
+   "mood": "Slow, minor, spacious. Proofs and big ideas.",
+   "bpm": 60,
+   "duration": 76.0,
+   "file": "deep-thought.mp3"
+  },
+  {
+   "id": "lofi-notes",
+   "title": "Lo-fi notes",
+   "mood": "Relaxed electric piano with a soft swung beat. Walkthroughs and code.",
+   "bpm": 84,
+   "duration": 84.0,
+   "file": "lofi-notes.mp3"
+  },
+  {
+   "id": "bright-idea",
+   "title": "Bright idea",
+   "mood": "Cheerful and quick. Intros, titles and endings.",
+   "bpm": 120,
+   "duration": 84.0,
+   "file": "bright-idea.mp3"
+  },
+  {
+   "id": "night-lecture",
+   "title": "Night lecture",
+   "mood": "Sparse piano over a warm pad. Calm and thoughtful.",
+   "bpm": 66,
+   "duration": 76.7,
+   "file": "night-lecture.mp3"
+  },
+  {
+   "id": "momentum",
+   "title": "Momentum",
+   "mood": "Driving pulse and arpeggios. Montages and fast sequences.",
+   "bpm": 126,
+   "duration": 80.2,
+   "file": "momentum.mp3"
+  }
+ ]
+}

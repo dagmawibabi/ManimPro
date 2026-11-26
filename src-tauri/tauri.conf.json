@@ -47,7 +47,8 @@
     ],
     "resources": {
       "python/": "worker/",
-      "templates/": "templates/"
+      "templates/": "templates/",
+      "music/": "music/"
     }
   }
 }

@@ -2,7 +2,25 @@ import { api, basename, joinPath, type BridgeCall, type RenderResult, type Scene
 import { clamp } from "./time";
 import { settings } from "./settings.svelte";
 
-export type Quality = "preview" | "draft" | "high" | "1440p" | "4k";
+export type Quality = "fast" | "preview" | "draft" | "high" | "1440p" | "4k";
+
+export type ExportFormat = "mp4" | "webm" | "mov" | "gif" | "png";
+export const EXPORT_FORMATS: { id: ExportFormat; label: string; ext: string; note: string }[] = [
+  { id: "mp4", label: "MP4 (H.264)", ext: "mp4", note: "Plays everywhere: YouTube, social media, slides." },
+  { id: "webm", label: "WebM (VP9)", ext: "webm", note: "Smaller files for the web." },
+  { id: "mov", label: "MOV (ProRes 422 HQ)", ext: "mov", note: "Large, high-quality master for editing apps." },
+  { id: "gif", label: "GIF", ext: "gif", note: "Silent, looping, up to 720 px wide and 15 fps." },
+  { id: "png", label: "PNG image sequence", ext: "", note: "One image per frame, in a folder. No sound." },
+];
+
+export type ExportOptions = {
+  format?: ExportFormat;
+  aspect?: Aspect;
+  /** Export just one scene (its sceneKey) instead of the timeline. */
+  only?: string | null;
+  burnCaptions?: boolean;
+  srt?: boolean;
+};
 
 export type Render = RenderResult & { quality: Quality; version: number };
 
@@ -13,7 +31,14 @@ export type Clip = {
   start: number; // seconds on the timeline
   in: number; // seconds into the source render
   out: number;
+  /** How this clip comes in from the one before it. */
+  transition?: Transition;
 };
+
+export type Transition = { kind: "fade" | "crossfade"; duration: number };
+
+/** One subtitle line on the timeline. */
+export type Caption = { id: string; start: number; end: number; text: string };
 
 export type AudioClip = {
   id: string;
@@ -87,6 +112,77 @@ class Studio {
 
   // Rendering
   renders = $state<Record<string, Render>>({});
+  captions = $state<Caption[]>([]);
+  /** Non-Python files in the project (data, images, notes). */
+  others = $state<string[]>([]);
+  /** An image shown over the viewer (a picture from the project, or a quick-look frame). */
+  stillImage = $state<string | null>(null);
+  stillVersion = $state(0);
+
+  // ------------------------------------------------------------ undo / redo
+  // Snapshots of the timeline (clips, audio, captions), taken when an edit settles.
+  #undo: string[] = [];
+  #redo: string[] = [];
+  #lastSnap: string | null = null;
+  canUndo = $state(false);
+  canRedo = $state(false);
+
+  #snapshot() {
+    return JSON.stringify({ clips: this.clips, audio: this.audio, captions: this.captions });
+  }
+
+  #record() {
+    const now = this.#snapshot();
+    if (this.#lastSnap !== null && now !== this.#lastSnap) {
+      this.#undo.push(this.#lastSnap);
+      if (this.#undo.length > 200) this.#undo.shift();
+      this.#redo = [];
+    }
+    this.#lastSnap = now;
+    this.canUndo = this.#undo.length > 0;
+    this.canRedo = this.#redo.length > 0;
+  }
+
+  #resetHistory() {
+    this.#undo = [];
+    this.#redo = [];
+    this.#lastSnap = this.#snapshot();
+    this.canUndo = this.canRedo = false;
+  }
+
+  #restore(snap: string) {
+    const s = JSON.parse(snap) as { clips: Clip[]; audio: AudioClip[]; captions: Caption[] };
+    this.clips = s.clips;
+    this.audio = s.audio;
+    this.captions = s.captions ?? [];
+    this.selectedClip = null;
+    this.#lastSnap = snap;
+    this.canUndo = this.#undo.length > 0;
+    this.canRedo = this.#redo.length > 0;
+    this.persist();
+  }
+
+  undo() {
+    this.#record(); // an edit made in the last moment counts as its own step
+    const prev = this.#undo.pop();
+    if (!prev) return;
+    this.#redo.push(this.#lastSnap!);
+    this.#restore(prev);
+  }
+
+  redo() {
+    const next = this.#redo.pop();
+    if (!next) return;
+    this.#undo.push(this.#lastSnap!);
+    this.#restore(next);
+  }
+  /** True while an assistant is working in the project (set by the assistant store). */
+  locked = $state(false);
+  static readonly LOCKED = "The assistant is working on this project. Wait for it to finish, or stop it, first.";
+
+  #assertUnlocked() {
+    if (this.locked) throw new Error(Studio.LOCKED);
+  }
   /** The project's frame shape: applies to renders, the viewer and export. */
   aspect = $state<Aspect>("16:9");
 
@@ -101,11 +197,25 @@ class Studio {
     return w >= h ? { width: even((short * w) / h), height: short } : { width: short, height: even((short * h) / w) };
   }
 
+  /** The visible area in scene units (config.frame_width / frame_height) for this project's frame. */
+  frameUnits() {
+    const { w, h } = this.aspectInfo;
+    const r = w / h;
+    const wide = (8 * 16) / 9;
+    if (settings.value.frameFit === "fit" && r < 16 / 9) return { width: wide, height: wide / r };
+    return w >= h ? { width: 8 * r, height: 8 } : { width: 8, height: 8 / r };
+  }
+
   /** Changes the frame shape and re-renders the scenes in use so previews match. */
   async setAspect(a: Aspect) {
     if (a === this.aspect) return;
     this.aspect = a;
     this.persist();
+    await this.rerenderAll();
+  }
+
+  /** Re-renders the open scene and every scene on the timeline (after a frame change). */
+  async rerenderAll() {
     const keys = new Set(this.clips.map((c) => sceneKey(c.file, c.scene)));
     const current = this.activeFile && this.currentScene ? sceneKey(this.activeFile, this.currentScene.name) : null;
     if (current) keys.delete(current);
@@ -214,6 +324,7 @@ class Studio {
     this.mediaDir = info.media_dir;
     this.files = info.files;
     this.folders = info.folders;
+    this.others = info.others ?? [];
     this.audioFiles = info.audio;
     this.renders = {};
     this.clips = [];
@@ -235,6 +346,7 @@ class Studio {
     const info = await api.openProject(this.dir);
     this.files = info.files;
     this.folders = info.folders;
+    this.others = info.others ?? [];
     this.audioFiles = info.audio;
     for (const f of info.files) await this.scanFile(f);
     if (this.activeFile && info.files.includes(this.activeFile) && !this.dirty) {
@@ -257,6 +369,97 @@ class Studio {
     await this.openFile(path);
   }
 
+  // ------------------------------------------------------------ scene classes
+  /** A file's source: the editor's copy when it is the open file. */
+  async sourceOf(file: string) {
+    return file === this.activeFile ? this.code : await api.readText(file);
+  }
+
+  async writeSource(file: string, text: string) {
+    if (file === this.activeFile) {
+      this.code = text;
+      this.docVersion++;
+      await this.save();
+    } else {
+      await api.writeText(file, text);
+    }
+    await this.scanFile(file, text);
+  }
+
+  /** Lines [start, end) of a top-level class, with its decorators, without trailing blank lines. */
+  static classSpan(lines: string[], name: string) {
+    let start = lines.findIndex((l) => new RegExp(`^class\\s+${name}\\b`).test(l));
+    if (start < 0) return null;
+    while (start > 0 && lines[start - 1].startsWith("@")) start--;
+    let end = start + 1;
+    while (end < lines.length && (lines[end].trim() === "" || /^\s/.test(lines[end]))) end++;
+    while (end > start + 1 && lines[end - 1].trim() === "") end--;
+    return { start, end };
+  }
+
+  /** Removes a scene class from its file, with its clips and render. */
+  async deleteScene(file: string, name: string) {
+    this.#assertUnlocked();
+    const lines = (await this.sourceOf(file)).split("\n");
+    const span = Studio.classSpan(lines, name);
+    if (!span) throw new Error(`Couldn't find class ${name} in ${basename(file)}.`);
+    let end = span.end;
+    while (end < lines.length && lines[end].trim() === "") end++;
+    lines.splice(span.start, end - span.start);
+    await this.writeSource(file, lines.join("\n"));
+    const key = sceneKey(file, name);
+    this.clips = this.clips.filter((c) => sceneKey(c.file, c.scene) !== key);
+    delete this.renders[key];
+    if (this.sourceKey === key) this.sourceKey = null;
+    this.persist();
+  }
+
+  /** Renames a scene class (every whole-word use in its file) and keeps its clips and render. */
+  async renameScene(file: string, from: string, to: string) {
+    this.#assertUnlocked();
+    if (!/^[A-Za-z_]\w*$/.test(to)) throw new Error("A scene name needs letters, digits or _ and can't start with a digit.");
+    if (from === to) return;
+    if (this.scenes[file]?.some((s) => s.name === to)) throw new Error(`${to} already exists in this file.`);
+    const text = (await this.sourceOf(file)).replace(new RegExp(`\\b${from}\\b`, "g"), to);
+    await this.writeSource(file, text);
+    const a = sceneKey(file, from);
+    const b = sceneKey(file, to);
+    for (const c of this.clips) if (sceneKey(c.file, c.scene) === a) c.scene = to;
+    if (this.renders[a]) {
+      this.renders[b] = this.renders[a];
+      delete this.renders[a];
+    }
+    if (this.sourceKey === a) this.sourceKey = b;
+    this.persist();
+  }
+
+  /** Copies a scene class to the end of its file under a new name. */
+  async duplicateScene(file: string, name: string) {
+    const text = await this.sourceOf(file);
+    const lines = text.split("\n");
+    const span = Studio.classSpan(lines, name);
+    if (!span) throw new Error(`Couldn't find class ${name} in ${basename(file)}.`);
+    const taken = new Set((this.scenes[file] ?? []).map((s) => s.name));
+    let copy = `${name}Copy`;
+    for (let i = 2; taken.has(copy); i++) copy = `${name}Copy${i}`;
+    const block = lines.slice(span.start, span.end).join("\n").replace(new RegExp(`^(class\\s+)${name}\\b`, "m"), `$1${copy}`);
+    await this.writeSource(file, `${text.replace(/\s*$/, "")}\n\n\n${block}\n`);
+    return copy;
+  }
+
+  /** Copies a scene file next to the original ("name-copy.py"). */
+  async duplicateFile(path: string) {
+    if (!this.dir) return;
+    if (this.dirty) await this.save();
+    const text = await api.readText(path);
+    const folder = path.slice(0, path.lastIndexOf("\\"));
+    const copy = await api.createSceneFile(folder, `${basename(path).replace(/\.py$/i, "")}-copy`);
+    await api.writeText(copy, text);
+    await this.refreshFromDisk();
+    await this.scanFile(copy);
+    return copy;
+  }
+
   // ------------------------------------------------------------ file system
   async newFolder(parent: string, name: string) {
     if (!this.dir) return;
@@ -267,6 +470,7 @@ class Studio {
 
   async renamePath(path: string, name: string) {
     if (!this.dir) return;
+    this.#assertUnlocked();
     if (this.dirty) await this.save();
     const to = await api.renamePath(this.dir, path, name);
     this.pathChanged(path, to);
@@ -275,6 +479,7 @@ class Studio {
 
   async movePath(path: string, into: string) {
     if (!this.dir) return;
+    this.#assertUnlocked();
     if (this.dirty) await this.save();
     const to = await api.movePath(this.dir, path, into);
     this.pathChanged(path, to);
@@ -283,6 +488,7 @@ class Studio {
 
   async trashPath(path: string) {
     if (!this.dir) return;
+    this.#assertUnlocked();
     await api.trashPath(this.dir, path);
     const gone = (p: string) => p === path || p.toLowerCase().startsWith(path.toLowerCase() + "\\");
     if (this.activeFile && gone(this.activeFile)) {
@@ -359,7 +565,15 @@ class Studio {
     this.docVersion++;
     this.syntaxError = null;
     this.cursorLine = 1;
-    await this.scanFile(path, text);
+    if (/\.py$/i.test(path)) await this.scanFile(path, text);
+  }
+
+  /** Copies files into the project (a folder in it, or its root) and lists them. */
+  async importFiles(sources: string[], folder = this.dir!) {
+    if (!this.dir) return [];
+    const out = await api.importFiles(this.dir, folder, sources);
+    await this.refreshFromDisk();
+    return out;
   }
 
   async save() {
@@ -369,9 +583,15 @@ class Studio {
     this.savedCode = text;
   }
 
+  #autoSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
   /** Re-reads scene classes as the user types (debounced). */
   codeChanged(text: string) {
     this.code = text;
+    if (settings.value.autoSave) {
+      clearTimeout(this.#autoSaveTimer);
+      this.#autoSaveTimer = setTimeout(() => this.dirty && this.save(), 1000);
+    }
     clearTimeout(this.#scanTimer);
     const file = this.activeFile;
     if (file) this.#scanTimer = setTimeout(() => this.scanFile(file, text), 250);
@@ -434,6 +654,7 @@ class Studio {
           sceneThumb: own ? joinPath(this.mediaDir, `thumbs\\${basename(file).replace(/\.py$/i, "")}-${scene}.jpg`) : null,
           noCache: settings.value.disableCache,
           aspect: [shape.w, shape.h],
+          fit: settings.value.frameFit === "fit",
           background: settings.value.backgroundColor !== "#000000" ? settings.value.backgroundColor : null,
         });
         const render: Render = { ...r, quality, version: Date.now() };
@@ -467,6 +688,7 @@ class Studio {
   }
 
   showSource(key: string) {
+    this.stillImage = null;
     this.sourceKey = key;
     this.viewerMode = "source";
     this.playing = false;
@@ -634,15 +856,110 @@ class Studio {
   }
 
   deleteSelected() {
+    if (this.captions.some((c) => c.id === this.selectedClip)) {
+      this.removeCaption(this.selectedClip!);
+      this.selectedClip = null;
+      return;
+    }
     for (const list of [this.clips, this.audio] as (Clip | AudioClip)[][]) {
       const i = list.findIndex((c) => c.id === this.selectedClip);
       if (i >= 0) {
-        list.splice(i, 1);
+        const [gone] = list.splice(i, 1);
+        if (settings.value.rippleDelete && list === this.clips) {
+          const len = clipLen(gone);
+          for (const c of this.clips) if (c.start >= gone.start) c.start = Math.max(0, c.start - len);
+        }
         this.selectedClip = null;
         this.persist();
         return;
       }
     }
+  }
+
+  // ------------------------------------------------------------ transitions
+  setTransition(id: string, t: Transition | null) {
+    const c = this.clips.find((x) => x.id === id);
+    if (!c) return;
+    if (t) c.transition = t;
+    else delete c.transition;
+    this.persist();
+  }
+
+  /** The clip that plays right before this one (by start time), if any. */
+  clipBefore(id: string) {
+    const sorted = [...this.clips].sort((a, b) => a.start - b.start);
+    const i = sorted.findIndex((c) => c.id === id);
+    return i > 0 ? sorted[i - 1] : undefined;
+  }
+
+  // ------------------------------------------------------------ captions
+  captionAt(t: number) {
+    return this.captions.find((c) => t >= c.start && t < c.end);
+  }
+
+  setCaptions(list: Caption[]) {
+    this.captions = [...list].sort((a, b) => a.start - b.start);
+    this.persist();
+  }
+
+  addCaption(start: number, text = "New caption", length = 2.5) {
+    const c: Caption = { id: uid(), start, end: start + length, text };
+    this.setCaptions([...this.captions, c]);
+    return c;
+  }
+
+  updateCaption(id: string, patch: Partial<Omit<Caption, "id">>) {
+    const c = this.captions.find((x) => x.id === id);
+    if (!c) return;
+    Object.assign(c, patch);
+    if (c.end < c.start + 0.2) c.end = c.start + 0.2;
+    this.setCaptions(this.captions);
+  }
+
+  removeCaption(id: string) {
+    this.setCaptions(this.captions.filter((c) => c.id !== id));
+  }
+
+  // ------------------------------------------------------------ quick look
+  /** Renders only the last frame of the scene under the cursor (skips the animation), for a fast check. */
+  async quickLook() {
+    const file = this.activeFile;
+    const scene = this.currentScene?.name;
+    if (!file || !scene) return;
+    const run = async () => {
+      this.job = { kind: "render", label: `${scene} (last frame)` };
+      this.error = null;
+      try {
+        const shape = this.aspectInfo;
+        const r = await api.call<{ image: string }>("render", {
+          path: file,
+          scene,
+          quality: "draft",
+          still: true,
+          mediaDir: this.mediaDir,
+          noCache: true,
+          aspect: [shape.w, shape.h],
+          fit: settings.value.frameFit === "fit",
+          background: settings.value.backgroundColor !== "#000000" ? settings.value.backgroundColor : null,
+        });
+        this.stillImage = r.image;
+        this.stillVersion = Date.now();
+      } catch (e) {
+        const err = e as WorkerError;
+        if (!err.cancelled) this.error = { ...err, file };
+      } finally {
+        this.job = null;
+      }
+    };
+    const p = this.#chain.then(run, run);
+    this.#chain = p;
+    return p;
+  }
+
+  /** Takes every clip of one audio file off the timeline (the file stays). */
+  removeAudioClips(path: string) {
+    this.audio = this.audio.filter((a) => a.path !== path);
+    this.persist();
   }
 
   setVolume(id: string, volume: number) {
@@ -666,8 +983,10 @@ class Studio {
   }
 
   // ----------------------------------------------------------------- export
-  async exportVideo(preset: ExportPreset, output: string, onStage: (s: string) => void, aspect: Aspect = this.aspect) {
-    const keys = [...new Set(this.clips.map((c) => sceneKey(c.file, c.scene)))];
+  async exportVideo(preset: ExportPreset, output: string, onStage: (s: string) => void, opts: ExportOptions = {}) {
+    const aspect = opts.aspect ?? this.aspect;
+    const only = opts.only ?? null;
+    const keys = only ? [only] : [...new Set(this.clips.map((c) => sceneKey(c.file, c.scene)))];
     const finals: Record<string, Render> = {};
     for (const [i, key] of keys.entries()) {
       const [file, scene] = key.split("::");
@@ -680,17 +999,26 @@ class Studio {
     const run = async () => {
       this.job = { kind: "export", label: "Export", fraction: 0 };
       try {
-        return await api.call<{ output: string }>("export", {
-          clips: this.clips.map((c) => ({
-            path: finals[sceneKey(c.file, c.scene)].video,
-            start: c.start,
-            in: c.in,
-            out: c.out,
-          })),
-          audio: this.audioMuted
-            ? []
-            : this.audio.map((a) => ({ path: a.path, start: a.start, in: a.in, out: a.out, volume: a.volume })),
-          total: this.timelineDuration,
+        const single = only ? finals[only] : null;
+        return await api.call<{ output: string; srt: string | null }>("export", {
+          clips: single
+            ? [{ path: single.video, start: 0, in: 0, out: single.duration }]
+            : this.clips.map((c) => ({
+                path: finals[sceneKey(c.file, c.scene)].video,
+                start: c.start,
+                in: c.in,
+                out: c.out,
+                transition: c.transition ?? null,
+              })),
+          audio:
+            single || this.audioMuted
+              ? []
+              : this.audio.map((a) => ({ path: a.path, start: a.start, in: a.in, out: a.out, volume: a.volume })),
+          total: single ? single.duration : this.timelineDuration,
+          format: opts.format ?? "mp4",
+          captions: single ? [] : this.captions,
+          burnCaptions: !!opts.burnCaptions,
+          srt: opts.srt ?? true,
           output,
           crf: settings.crf(),
           ...this.frameSize(preset.height, aspect),
@@ -741,6 +1069,26 @@ class Studio {
               ? "LaTeX is not installed. Use Text instead of Tex/MathTex, or ask the user to install LaTeX from ManimPro's status bar."
               : undefined,
           });
+        }
+        case "view_scene": {
+          const file = this.resolveFile(String(c.args.file ?? ""));
+          if (!file) return reply({ ok: false, error: `No file named ${c.args.file} in the project.` });
+          const scene = String(c.args.scene);
+          if (!this.scenes[file]?.some((s) => s.name === scene)) await this.scanFile(file);
+          let r: Render | null | undefined = c.args.rerender ? null : this.renders[sceneKey(file, scene)];
+          if (!r) r = await this.render(file, scene, this.previewQuality, true);
+          if (!r) return reply({ ok: false, error: this.error?.message ?? "Render failed.", line: this.error?.line ?? null });
+          return reply({ ok: true, video: r.video, duration: r.duration, resolution: `${r.width}x${r.height}` });
+        }
+        case "view_timeline": {
+          if (!this.clips.length) return reply({ ok: false, error: "The timeline is empty. Call arrange_timeline or add_to_timeline first." });
+          const segments = [];
+          for (const cl of [...this.clips].sort((a, b) => a.start - b.start)) {
+            let r: Render | null | undefined = this.renders[sceneKey(cl.file, cl.scene)];
+            if (!r) r = await this.render(cl.file, cl.scene, this.previewQuality);
+            if (r) segments.push({ start: cl.start, end: cl.start + clipLen(cl), in: cl.in, video: r.video, scene: cl.scene });
+          }
+          return reply({ ok: true, duration: this.timelineDuration, segments });
         }
         case "get_timeline":
           return reply({
@@ -832,21 +1180,34 @@ class Studio {
         aspect: this.aspect,
         clips: this.clips.map((c) => ({ ...c, file: rel(c.file) })),
         audio: this.audio.map((a) => ({ ...a, path: rel(a.path) })),
+        captions: this.captions,
         renders: Object.fromEntries(Object.entries(this.renders).map(([k, r]) => [rel(k), r])),
       };
+      this.#record();
       api.writeText(joinPath(dir, "project.json"), JSON.stringify(data, null, 2));
     }, 400);
   }
 
   loadTimeline(raw: unknown) {
-    const data = raw as { clips?: Clip[]; audio?: AudioClip[]; renders?: Record<string, Render>; aspect?: Aspect } | null;
+    const data = raw as {
+      clips?: Clip[];
+      audio?: AudioClip[];
+      captions?: Caption[];
+      renders?: Record<string, Render>;
+      aspect?: Aspect;
+    } | null;
     this.aspect = ASPECTS.some((a) => a.id === data?.aspect) ? data!.aspect! : "16:9";
-    if (!data || !this.dir) return;
+    this.captions = data?.captions ?? [];
+    if (!data || !this.dir) {
+      this.#resetHistory();
+      return;
+    }
     const abs = (name: string) => (/^[a-z]:[\\/]/i.test(name) ? name : joinPath(this.dir!, name));
     this.clips = (data.clips ?? []).map((c) => ({ ...c, file: abs(c.file) }));
     this.audio = (data.audio ?? []).map((a) => ({ ...a, path: abs(a.path) }));
     this.renders = Object.fromEntries(Object.entries(data.renders ?? {}).map(([k, r]) => [abs(k), r]));
     for (const a of this.audio) this.loadWaveform(a.path);
+    this.#resetHistory();
   }
 }
 

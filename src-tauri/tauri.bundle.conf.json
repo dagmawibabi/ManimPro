@@ -3,11 +3,13 @@
     "resources": {
       "python/": "worker/",
       "templates/": "templates/",
-      "runtime/": "runtime/"
+      "runtime/": "runtime/",
+      "music/": "music/"
     },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
+        "installerHooks": "./installer-hooks.nsh",
         "compression": "lzma"
       },
       "webviewInstallMode": {

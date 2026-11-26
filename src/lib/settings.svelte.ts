@@ -28,6 +28,8 @@ export type Settings = {
   openLastProject: boolean;
   confirmDelete: boolean;
   showStatusBar: boolean;
+  /** Home page: play a project's or template's video after hovering its card. */
+  hoverPreviews: boolean;
   // Code editor
   fontSize: number;
   fontFamily: string;
@@ -39,23 +41,36 @@ export type Settings = {
   ligatures: boolean;
   manimCompletions: boolean;
   stickyScroll: boolean;
+  bracketColors: boolean;
+  showWhitespace: boolean;
+  /** Save the open file shortly after typing stops (does not render). */
+  autoSave: boolean;
   // Assistant
   autoRenderAfterAssistant: boolean;
   multiSceneByDefault: boolean;
   showToolDetails: boolean;
   extraInstructions: string;
   // Rendering
-  previewQuality: "preview" | "draft" | "high";
+  previewQuality: "fast" | "preview" | "draft" | "high";
   renderOnSave: boolean;
   disableCache: boolean;
   backgroundColor: string;
+  /** Frame shape for new projects. */
+  defaultAspect: "16:9" | "9:16" | "1:1" | "4:5" | "4:3" | "21:9";
+  /** Non-16:9 frames: keep the whole 16:9 layout visible, or use the frame's own units. */
+  frameFit: "fit" | "fill";
   // Export
   exportPreset: "draft" | "high" | "1440p" | "4k";
   exportQuality: "small" | "balanced" | "high";
   exportFolder: string;
+  revealAfterExport: boolean;
   // Timeline
   snapping: boolean;
   defaultZoom: number;
+  /** Deleting a video clip pulls the clips after it back to close the gap. */
+  rippleDelete: boolean;
+  followPlayhead: boolean;
+  showFilmstrips: boolean;
 };
 
 export const DEFAULTS: Settings = {
@@ -70,6 +85,7 @@ export const DEFAULTS: Settings = {
   openLastProject: false,
   confirmDelete: true,
   showStatusBar: true,
+  hoverPreviews: true,
   fontSize: 13.5,
   fontFamily: "'Cascadia Code', Consolas, monospace",
   lineHeight: 1.55,
@@ -80,6 +96,9 @@ export const DEFAULTS: Settings = {
   ligatures: true,
   manimCompletions: true,
   stickyScroll: true,
+  bracketColors: true,
+  showWhitespace: false,
+  autoSave: false,
   autoRenderAfterAssistant: true,
   multiSceneByDefault: true,
   showToolDetails: true,
@@ -88,11 +107,17 @@ export const DEFAULTS: Settings = {
   renderOnSave: true,
   disableCache: false,
   backgroundColor: "#000000",
+  defaultAspect: "16:9",
+  frameFit: "fit",
   exportPreset: "high",
   exportQuality: "balanced",
   exportFolder: "",
+  revealAfterExport: false,
   snapping: true,
   defaultZoom: 48,
+  rippleDelete: false,
+  followPlayhead: true,
+  showFilmstrips: true,
 };
 
 export const FONT_FAMILIES = [

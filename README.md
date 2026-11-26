@@ -5,7 +5,7 @@ Write a scene, see it render beside your code, arrange scenes on a timeline, exp
 End users install one `.exe`; Python, Manim and FFmpeg ship inside it.
 
 ManimPro is open source: [github.com/dagmawibabi/ManimPro](https://github.com/dagmawibabi/ManimPro).
-Website: [manim.dagmawi.dev](https://manim.dagmawi.dev).
+Website: [manimpro.dagmawi.dev](https://manimpro.dagmawi.dev).
 
 ## How it fits together
 

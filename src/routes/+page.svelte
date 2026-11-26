@@ -5,9 +5,13 @@
   import { studio } from "#lib/studio.svelte.ts";
   import { assistant } from "#lib/assistant.svelte.ts";
   import { ui } from "#lib/ui.svelte.ts";
-  import { enterProject, type EnterOptions } from "#lib/navigation.ts";
+  import { enterProject, newProject, type EnterOptions } from "#lib/navigation.ts";
   import templates from "#lib/templates.json";
   import PromptBox from "#lib/components/PromptBox.svelte";
+  import HoverPreview from "#lib/components/HoverPreview.svelte";
+  import ContextMenu, { type MenuItem } from "#lib/components/ContextMenu.svelte";
+  import { ask } from "@tauri-apps/plugin-dialog";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import Icon from "#lib/components/Icon.svelte";
   import LatexDialog from "#lib/components/LatexDialog.svelte";
   import WindowControls from "#lib/components/WindowControls.svelte";
@@ -39,6 +43,8 @@
 
   onMount(() => {
     studio.init();
+    // Launched with a folder ("Open in ManimPro" in File Explorer): open it straight away.
+    api.launchPath().then((dir) => { if (dir) enter(dir); }).catch(() => {});
     assistant.init();
     load();
   });
@@ -66,7 +72,7 @@
     busy = "prompt";
     failure = null;
     try {
-      const dir = await api.createProject(nameFrom(prompt || files[0]?.name || "Untitled"), "blank");
+      const dir = await newProject(nameFrom(prompt || files[0]?.name || "Untitled"), "blank");
       await enter(dir, { prompt, files });
     } catch (e) {
       failure = String(e);
@@ -79,13 +85,85 @@
     busy = t.id;
     failure = null;
     try {
-      const dir = await api.createProject(t.title, t.id);
+      const dir = await newProject(t.title, t.id);
       await enter(dir, { render: true });
     } catch (e) {
       failure = String(e);
     } finally {
       busy = null;
     }
+  }
+
+  // ------------------------------------------------------------ project card menu
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  let renaming = $state<{ dir: string; value: string } | null>(null);
+
+  function projectMenu(e: MouseEvent, p: ProjectSummary, fromRecent: boolean) {
+    e.preventDefault();
+    e.stopPropagation();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const zoom = parseFloat(getComputedStyle(document.documentElement).zoom || "1") || 1;
+    const at = e.type === "contextmenu" ? { x: e.clientX, y: e.clientY } : { x: r.left * zoom, y: r.bottom * zoom + 4 };
+    menu = {
+      ...at,
+      items: [
+        { label: "Open", icon: "folder", action: () => enter(p.dir) },
+        {
+          label: "Export video…",
+          icon: "export",
+          disabled: !p.clips,
+          hint: p.clips ? undefined : "Nothing on the timeline yet",
+          action: () => {
+            ui.exportOnOpen = true;
+            enter(p.dir);
+          },
+        },
+        "separator",
+        { label: "Rename", icon: "pencil", action: () => (renaming = { dir: p.dir, value: p.name }) },
+        { label: "Show in folder", icon: "reveal", action: () => revealItemInDir(p.dir) },
+        ...(fromRecent ? [{ label: "Remove from Recent", icon: "close", action: () => forget(p) } as MenuItem] : []),
+        "separator",
+        { label: "Delete project", icon: "trash", danger: true, action: () => removeProject(p) },
+      ],
+    };
+  }
+
+  async function forget(p: ProjectSummary) {
+    await api.forgetRecent(p.dir);
+    await load();
+  }
+
+  async function removeProject(p: ProjectSummary) {
+    const ok = await ask(`Move “${p.name}” and everything in it to the Recycle Bin? You can restore it from there.`, {
+      title: "Delete project",
+      kind: "warning",
+    });
+    if (!ok) return;
+    failure = null;
+    try {
+      await api.deleteProject(p.dir);
+    } catch (e) {
+      failure = String(e);
+    }
+    await load();
+  }
+
+  async function commitRename() {
+    const r = renaming;
+    renaming = null;
+    const name = r?.value.trim();
+    if (!r || !name || name === r.dir.slice(r.dir.lastIndexOf("\\") + 1)) return;
+    try {
+      await api.renameProject(r.dir, name);
+    } catch (e) {
+      failure = String(e);
+    }
+    await load();
+  }
+
+  function focusSelect(el: HTMLInputElement) {
+    el.focus();
+    el.select();
   }
 
   async function openFolder() {
@@ -107,6 +185,41 @@
     return d >= 60 ? `${Math.floor(d / 60)}:${String(Math.round(d % 60)).padStart(2, "0")}` : `${Math.round(d)}s`;
   }
 </script>
+
+{#snippet projectCard(p: ProjectSummary, fromRecent: boolean, facts: string)}
+  <div class="project-wrap" role="listitem" oncontextmenu={(e) => projectMenu(e, p, fromRecent)}>
+    <button class="project" onclick={() => enter(p.dir)}>
+      <div class="thumb">
+        {#if p.thumbnail}<img src={mediaUrl(p.thumbnail, p.modified)} alt="" loading="lazy" />{:else}<Icon name="film" size={22} />{/if}
+        <HoverPreview src={p.preview ? mediaUrl(p.preview, p.modified) : null} />
+      </div>
+      {#if renaming?.dir !== p.dir}
+        <div class="meta">
+          <span class="name">{p.name}</span>
+          <span class="sub">{ago(p.modified)} · {facts}</span>
+        </div>
+      {/if}
+    </button>
+    {#if renaming?.dir === p.dir}
+      <input
+        class="rename"
+        aria-label="New project name"
+        bind:value={renaming.value}
+        use:focusSelect
+        onkeydown={(e) => {
+          if (e.key === "Enter") commitRename();
+          if (e.key === "Escape") renaming = null;
+        }}
+        onblur={commitRename}
+      />
+    {/if}
+    <button class="more" class:open={menu !== null} aria-label="More for {p.name}" title="More" onclick={(e) => projectMenu(e, p, fromRecent)}>
+      <Icon name="more" size={16} />
+    </button>
+  </div>
+{/snippet}
+
+{#if menu}<ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />{/if}
 
 <div class="home">
   <header class="top" data-tauri-drag-region>
@@ -166,15 +279,7 @@
         <div class="section-head"><h2>Recent</h2></div>
         <div class="projects recent">
           {#each recent as p (p.dir)}
-            <button class="project" onclick={() => enter(p.dir)}>
-              <div class="thumb">
-                {#if p.thumbnail}<img src={mediaUrl(p.thumbnail, p.modified)} alt="" />{:else}<Icon name="film" size={22} />{/if}
-              </div>
-              <div class="meta">
-                <span class="name">{p.name}</span>
-                <span class="sub">{ago(p.modified)} · {p.scenes} {p.scenes === 1 ? "scene" : "scenes"}</span>
-              </div>
-            </button>
+            {@render projectCard(p, true, `${p.scenes} ${p.scenes === 1 ? "scene" : "scenes"}`)}
           {/each}
         </div>
       </section>
@@ -200,6 +305,7 @@
               {:else}
                 <span class="formula">{t.latex ? "a² + b² = c²" : t.title}</span>
               {/if}
+              <HoverPreview src={(t as { preview?: string | null }).preview ?? null} />
               {#if t.duration}<span class="dur">{seconds(t.duration)}</span>{/if}
               {#if busy === t.id}<span class="busy"><span class="spin"></span></span>{/if}
             </div>
@@ -224,15 +330,7 @@
       {#if filtered.length}
         <div class="projects">
           {#each filtered as p (p.dir)}
-            <button class="project" onclick={() => enter(p.dir)}>
-              <div class="thumb">
-                {#if p.thumbnail}<img src={mediaUrl(p.thumbnail, p.modified)} alt="" loading="lazy" />{:else}<Icon name="film" size={22} />{/if}
-              </div>
-              <div class="meta">
-                <span class="name">{p.name}</span>
-                <span class="sub">{ago(p.modified)} · {p.clips} {p.clips === 1 ? "clip" : "clips"}</span>
-              </div>
-            </button>
+            {@render projectCard(p, false, `${p.clips} ${p.clips === 1 ? "clip" : "clips"}`)}
           {/each}
         </div>
       {:else}
@@ -530,8 +628,48 @@
     color: var(--muted);
     font-style: italic;
   }
+  .project-wrap {
+    position: relative;
+    min-width: 0;
+  }
+  .project-wrap .project {
+    width: 100%;
+  }
+  .more {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 10px;
+    background: rgb(12 12 14 / 0.78);
+    border: 1px solid rgb(255 255 255 / 0.1);
+    color: var(--text);
+    opacity: 0;
+    transition: opacity 0.15s ease, background 0.15s ease;
+    backdrop-filter: blur(6px);
+  }
+  .project-wrap:hover .more,
+  .more:focus-visible {
+    opacity: 1;
+  }
+  .more:hover {
+    background: rgb(40 40 46 / 0.92);
+  }
+  .rename {
+    width: 100%;
+    height: 32px;
+    margin-top: 8px;
+    padding: 0 10px;
+    border-radius: 10px;
+    user-select: text;
+  }
   .dur {
     position: absolute;
+    z-index: 3;
     right: 6px;
     bottom: 6px;
     padding: 2px 7px;
@@ -542,6 +680,7 @@
     font-family: var(--mono);
   }
   .busy {
+    z-index: 3;
     position: absolute;
     inset: 0;
     display: grid;

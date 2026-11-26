@@ -10,6 +10,7 @@
   let { onExport }: { onExport: () => void } = $props();
 
   const previewOptions: { id: Quality; label: string }[] = [
+    { id: "fast", label: "Fast · 360p" },
     { id: "preview", label: "Preview · 480p" },
     { id: "draft", label: "Draft · 720p" },
     { id: "high", label: "Full · 1080p" },
@@ -56,11 +57,14 @@
     {#if studio.job?.kind === "render"}
       <button class="btn" onclick={() => studio.cancel()}><Icon name="stop" size={12} /> Stop</button>
     {:else}
+      <button class="icon-btn" title="Quick look: render only the last frame" aria-label="Quick look at the last frame" disabled={!studio.currentScene} onclick={() => studio.quickLook()}>
+        <Icon name="image" size={16} />
+      </button>
       <button class="btn" disabled={!studio.currentScene} onclick={() => studio.renderCurrent()}>
         <Icon name="bolt" size={14} /> Render
       </button>
     {/if}
-    <button class="btn primary" disabled={!studio.clips.length} onclick={onExport}>
+    <button class="btn primary" disabled={!studio.clips.length && !studio.currentScene} onclick={onExport}>
       <Icon name="export" size={14} /> Export
     </button>
     <WindowControls />

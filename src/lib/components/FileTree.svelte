@@ -4,7 +4,11 @@
 
 <script lang="ts">
   import { ask } from "@tauri-apps/plugin-dialog";
+  import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
+  import { open as pickFiles } from "@tauri-apps/plugin-dialog";
+  import { extOf, iconOf, isImage, isText } from "#lib/filetypes.ts";
   import { studio } from "#lib/studio.svelte.ts";
+  import { api } from "#lib/api.ts";
   import { ui } from "#lib/ui.svelte.ts";
   import Icon from "./Icon.svelte";
   import PythonIcon from "./PythonIcon.svelte";
@@ -33,7 +37,7 @@
       return node;
     };
     for (const f of studio.folders) ensure(f);
-    for (const f of studio.files) {
+    for (const f of [...studio.files, ...studio.others]) {
       ensure(parentOf(f)).children.push({ name: f.slice(f.lastIndexOf("\\") + 1), path: f, kind: "file", children: [] });
     }
     const sort = (n: TreeNode) => {
@@ -85,18 +89,43 @@
     const items: MenuItem[] = [
       { label: "New scene file", icon: "filePlus", action: () => startNew("file", folder) },
       { label: "New folder", icon: "folderPlus", action: () => startNew("folder", folder) },
+      { label: "Add files here…", icon: "paperclip", hint: "Data, images, anything", action: () => addFiles(folder) },
     ];
+    if (node?.kind === "file" && extOf(node.path) === "py") {
+      const scenes = studio.scenes[node.path] ?? [];
+      items.unshift(
+        { label: "Open", icon: "file", action: () => studio.openFile(node.path) },
+        {
+          label: scenes.length ? `Add its ${scenes.length === 1 ? "scene" : `${scenes.length} scenes`} to timeline` : "No scenes to add",
+          icon: "plus",
+          disabled: !scenes.length,
+          action: async () => {
+            for (const s of scenes) await studio.addToTimeline(node.path, s.name);
+          },
+        },
+        "separator",
+      );
+    }
     if (node) {
       items.push(
         "separator",
         {
           label: "Rename",
           icon: "pencil",
-          action: () => (editing = { mode: "rename", parent: folder, path: node.path, value: node.kind === "file" ? node.name.replace(/\.py$/i, "") : node.name }),
+          disabled: studio.locked,
+          action: () => (editing = { mode: "rename", parent: folder, path: node.path, value: node.kind === "file" ? node.name.replace(/\.[^.]+$/, "") : node.name }),
         },
-        { label: "Move to project root", icon: "folder", disabled: folder.toLowerCase() === studio.dir?.toLowerCase(), action: () => studio.movePath(node.path, studio.dir!) },
+        { label: "Move to project root", icon: "folder", disabled: studio.locked || folder.toLowerCase() === studio.dir?.toLowerCase(), action: () => studio.movePath(node.path, studio.dir!) },
+        ...(node.kind === "file" && extOf(node.path) === "py"
+          ? [{ label: "Duplicate", icon: "copy", action: () => studio.duplicateFile(node.path).catch((e) => (error = String(e))) } as MenuItem]
+          : []),
+        ...(node.kind === "file" && extOf(node.path) !== "py"
+          ? [{ label: "Open with default app", icon: "link", action: () => openPath(node.path).catch((e) => (error = String(e))) } as MenuItem]
+          : []),
+        { label: "Copy path", icon: "copy", action: () => navigator.clipboard.writeText(node.path) },
+        { label: "Show in folder", icon: "reveal", action: () => revealItemInDir(node.path) },
         "separator",
-        { label: "Delete", icon: "trash", danger: true, action: () => remove(node) },
+        { label: "Delete", icon: "trash", danger: true, disabled: studio.locked, hint: studio.locked ? "Not while the assistant is working" : undefined, action: () => remove(node) },
       );
     }
     menu = { x: e.clientX, y: e.clientY, items };
@@ -108,7 +137,8 @@
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   }
   function dragOver(e: DragEvent, folder: string) {
-    if (!e.dataTransfer?.types.includes("application/x-mp-path")) return;
+    const types = e.dataTransfer?.types ?? [];
+    if (!types.includes("application/x-mp-path") && !types.includes("Files")) return;
     e.preventDefault();
     e.stopPropagation();
     dropTarget = folder;
@@ -116,7 +146,10 @@
   async function drop(e: DragEvent, folder: string) {
     const path = e.dataTransfer?.getData("application/x-mp-path");
     dropTarget = null;
-    if (!path) return;
+    if (!path) {
+      await dropExternal(e, folder);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -126,13 +159,62 @@
     }
   }
 
+  function openNode(path: string) {
+    if (extOf(path) === "py" || isText(path)) {
+      studio.openFile(path);
+      ui.mainTab = "code";
+    } else if (isImage(path)) {
+      studio.stillImage = path;
+    } else {
+      openPath(path).catch((e) => (error = String(e)));
+    }
+  }
+
+  /** "Add files…": copy files from anywhere on the computer into a project folder. */
+  export async function addFiles(folder: string = studio.dir!) {
+    const picked = await pickFiles({ multiple: true, title: "Add files to the project" });
+    const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!list.length) return;
+    collapsed[folder] = false;
+    try {
+      await studio.importFiles(list, folder);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  /** Files dragged in from File Explorer arrive as bytes (no paths), so write them in. */
+  async function dropExternal(e: DragEvent, folder: string) {
+    const files = [...(e.dataTransfer?.files ?? [])];
+    if (!files.length || !studio.dir) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    dropTarget = null;
+    for (const f of files) {
+      if (f.size > 100 * 1024 * 1024) {
+        error = `${f.name} is over 100 MB; use Add files instead.`;
+        continue;
+      }
+      const buf = new Uint8Array(await f.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      try {
+        await api.importFileData(studio.dir, folder, f.name, btoa(bin));
+      } catch (err) {
+        error = String(err);
+      }
+    }
+    await studio.refreshFromDisk();
+    return true;
+  }
+
   function focusInput(el: HTMLInputElement) {
     el.focus();
     el.select();
   }
 </script>
 
-{#snippet nameInput(depth: number, kind: "file" | "folder")}
+{#snippet nameInput(depth: number, kind: "file" | "folder", ext = "py")}
   <div class="row editing" style:padding-left="{10 + depth * 14}px">
     {#if kind === "folder"}<Icon name="folder" size={14} />{:else}<PythonIcon size={14} />{/if}
     <input
@@ -146,14 +228,14 @@
       }}
       onblur={commit}
     />
-    {#if kind === "file"}<span class="ext">.py</span>{/if}
+    {#if kind === "file"}<span class="ext">.{ext}</span>{/if}
   </div>
 {/snippet}
 
 {#snippet branch(node: TreeNode, depth: number)}
   {#each node.children as child (child.path)}
     {#if editing?.mode === "rename" && editing.path === child.path}
-      {@render nameInput(depth, child.kind)}
+      {@render nameInput(depth, child.kind, child.kind === "file" ? extOf(child.path) || "py" : "py")}
     {:else if child.kind === "folder"}
       <div
         class="row folder"
@@ -190,13 +272,10 @@
         style:padding-left="{24 + depth * 14}px"
         draggable="true"
         ondragstart={(e) => dragStart(e, child)}
-        onclick={() => {
-          studio.openFile(child.path);
-          ui.mainTab = "code";
-        }}
+        onclick={() => openNode(child.path)}
         oncontextmenu={(e) => nodeMenu(e, child)}
       >
-        <PythonIcon size={14} />
+        {#if extOf(child.path) === "py"}<PythonIcon size={14} />{:else}<span class="other-icon"><Icon name={iconOf(child.path)} size={14} /></span>{/if}
         <span class="name">{child.name}</span>
         {#if child.path === studio.activeFile && studio.dirty}<span class="dot" title="Unsaved changes"></span>{/if}
         {#if n}<span class="badge" title="{n} {n === 1 ? 'scene' : 'scenes'}">{n}</span>{/if}
@@ -227,6 +306,10 @@
 {#if error}<p class="error" role="alert">{error} <button class="link" onclick={() => (error = null)}>Dismiss</button></p>{/if}
 
 <style>
+  .other-icon {
+    display: inline-grid;
+    color: var(--faint);
+  }
   .tree {
     display: grid;
     gap: 1px;

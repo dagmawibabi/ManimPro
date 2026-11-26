@@ -92,22 +92,26 @@
     <ul>
       {#each g.chats as chat (chat.id)}
         {@const running = assistant.runChatId === chat.id}
-        <li class:active={chat.id === assistant.activeId}>
+        <li class:active={chat.id === assistant.activeId} class:running>
           <button class="item" onclick={() => open(chat.id)}>
-            <span class="head">
-              <span class="title">{chat.title}</span>
-              <span class="time">{running ? "" : ago(chat.updated)}</span>
-              {#if running}<span class="spin" title="Working"></span>{/if}
-            </span>
-            <span class="preview">{preview(chat)}</span>
-            <span class="meta">
-              <span class="provider p-{chat.provider}"></span>
-              {providerName(chat.provider)} · {messages(chat)} {messages(chat) === 1 ? "message" : "messages"}
+            <span class="body">
+              <span class="head">
+                <span class="title">{chat.title}</span>
+                {#if running}
+                  <span class="working"><span class="spin"></span>Working</span>
+                {:else}
+                  <span class="time">{ago(chat.updated)}</span>
+                {/if}
+              </span>
+              <span class="preview">{preview(chat)}</span>
+              <span class="meta">{providerName(chat.provider)} · {messages(chat)} {messages(chat) === 1 ? "message" : "messages"}</span>
             </span>
           </button>
-          <button class="icon-btn del" title="Delete chat" aria-label="Delete chat {chat.title}" disabled={running} onclick={() => assistant.deleteChat(chat.id)}>
-            <Icon name="trash" size={13} />
-          </button>
+          {#if !running}
+            <button class="icon-btn del" title="Delete chat" aria-label="Delete chat {chat.title}" onclick={() => assistant.deleteChat(chat.id)}>
+              <Icon name="trash" size={13} />
+            </button>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -182,34 +186,34 @@
   }
   li {
     position: relative;
-    border-radius: 12px;
+    border-radius: 14px;
+    border: 1px solid transparent;
+    transition: background 0.12s ease, border-color 0.12s ease;
   }
   li:hover {
     background: var(--panel-2);
   }
   li.active {
     background: var(--raised);
-  }
-  li.active::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 12px;
-    bottom: 12px;
-    width: 3px;
-    border-radius: 0 3px 3px 0;
-    background: var(--accent);
+    border-color: var(--line);
   }
   .item {
-    display: grid;
-    gap: 3px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
     width: 100%;
-    padding: 9px 12px 9px 14px;
+    padding: 10px 12px;
     text-align: left;
+  }
+  .body {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 2px;
   }
   .head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 8px;
     min-width: 0;
   }
@@ -218,6 +222,7 @@
     min-width: 0;
     font-weight: 600;
     font-size: 12.5px;
+    color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -226,49 +231,38 @@
     flex: none;
     font-size: 11px;
     color: var(--faint);
+    font-variant-numeric: tabular-nums;
   }
   li:hover .time {
     visibility: hidden;
   }
-  .preview {
-    font-size: 12px;
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .meta {
-    display: flex;
+  .working {
+    flex: none;
+    display: inline-flex;
     align-items: center;
     gap: 6px;
     font-size: 11px;
+    color: var(--accent);
+  }
+  .preview {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .meta {
+    margin-top: 2px;
+    font-size: 11px;
     color: var(--faint);
-  }
-  .provider {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--faint);
-  }
-  .p-claude {
-    background: #d97757;
-  }
-  .p-codex {
-    background: #e8e8e8;
-  }
-  .p-opencode {
-    background: #83c167;
-  }
-  .p-openrouter {
-    background: #8b8bf5;
-  }
-  .p-vercel {
-    background: #9a9aa2;
   }
   .del {
     position: absolute;
     right: 6px;
-    top: 6px;
+    top: 7px;
     width: 26px;
     height: 26px;
     opacity: 0;

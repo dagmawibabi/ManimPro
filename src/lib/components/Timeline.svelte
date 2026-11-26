@@ -1,8 +1,9 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { studio, sceneKey, type Clip, type AudioClip, type Track } from "#lib/studio.svelte.ts";
+  import { studio, sceneKey, type Clip, type AudioClip, type Track, type Caption } from "#lib/studio.svelte.ts";
   import { timecode, shortTime, clamp } from "#lib/time.ts";
   import { mediaUrl } from "#lib/api.ts";
+  import { captionsFromVoiceovers } from "#lib/captions.ts";
   import Icon from "./Icon.svelte";
   import { settings } from "#lib/settings.svelte.ts";
   import { ui } from "#lib/ui.svelte.ts";
@@ -43,6 +44,27 @@
     ];
     if (kind === "video" && "scene" in clip) {
       const key = sceneKey(clip.file, clip.scene);
+      const prev = studio.clipBefore(clip.id);
+      if (prev) {
+        const tr = clip.transition;
+        const d = tr?.duration ?? 0.6;
+        const touching = Math.abs(prev.start + (prev.out - prev.in) - clip.start) < 0.05;
+        const lengths = [0.3, 0.6, 1, 1.5];
+        const nextLen = lengths[(lengths.indexOf(d) + 1) % lengths.length] ?? 0.6;
+        items.push(
+          { label: "No transition", icon: tr ? "close" : "check", action: () => studio.setTransition(clip.id, null) },
+          { label: `Fade through black (${d} s)`, icon: tr?.kind === "fade" ? "check" : "film", action: () => studio.setTransition(clip.id, { kind: "fade", duration: d }) },
+          {
+            label: `Crossfade from ${prev.scene} (${d} s)`,
+            icon: tr?.kind === "crossfade" ? "check" : "copy",
+            disabled: !touching,
+            hint: touching ? undefined : "Needs the clips to touch",
+            action: () => studio.setTransition(clip.id, { kind: "crossfade", duration: d }),
+          },
+          ...(tr ? [{ label: `Transition length: ${d} s → ${nextLen} s`, icon: "refresh", action: () => studio.setTransition(clip.id, { ...tr, duration: nextLen }) } as MenuItem] : []),
+          "separator",
+        );
+      }
       items.push(
         { label: "Show in viewer", icon: "play", disabled: !studio.renders[key], action: () => studio.showSource(key) },
         {
@@ -69,6 +91,65 @@
       { label: "Delete", icon: "trash", shortcut: "Del", danger: true, action: deleteViaShortcut },
     );
     menu = { x: e.clientX, y: e.clientY, items };
+  }
+
+  // ---- Captions
+  function editCaptions(focus: string | null) {
+    ui.captionFocus = focus;
+    ui.captionsOpen = true;
+  }
+
+  function captionLaneMenu(e: MouseEvent) {
+    e.preventDefault();
+    const at = snap(toTime(e.clientX));
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Add caption here", icon: "plus", action: () => editCaptions(studio.addCaption(at).id) },
+        { label: "Captions from voiceovers", icon: "mic", action: () => captionsFromVoiceovers() },
+        { label: "Edit captions…", icon: "captions", action: () => editCaptions(null) },
+      ],
+    };
+  }
+
+  function captionMenu(e: MouseEvent, c: Caption) {
+    e.preventDefault();
+    e.stopPropagation();
+    studio.selectedClip = c.id;
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Edit text and timing…", icon: "pencil", action: () => editCaptions(c.id) },
+        { label: "Delete caption", icon: "trash", danger: true, action: () => studio.removeCaption(c.id) },
+      ],
+    };
+  }
+
+  /** Drag a caption along the track (its length stays the same). */
+  function moveCaption(e: PointerEvent, c: Caption) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    studio.selectedClip = c.id;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    const s0 = c.start;
+    const len = c.end - c.start;
+    let moved = false;
+    el.onpointermove = (ev) => {
+      const dt = (ev.clientX - x0) / studio.zoom;
+      if (!moved && Math.abs(ev.clientX - x0) < 3) return;
+      moved = true;
+      c.start = Math.max(0, snap(s0 + dt));
+      c.end = c.start + len;
+    };
+    el.onpointerup = () => {
+      el.onpointermove = null;
+      el.onpointerup = null;
+      if (moved) studio.setCaptions(studio.captions);
+    };
   }
 
   /** Right-click on the empty audio lane: add audio where you clicked. */
@@ -221,7 +302,7 @@
 
   // Keep the playhead in view while playing.
   $effect(() => {
-    if (!studio.playing || !scroller) return;
+    if (!studio.playing || !scroller || !settings.value.followPlayhead) return;
     const x = studio.playhead * studio.zoom;
     const visible = scroller.clientWidth - HEADER_W;
     if (x > scroller.scrollLeft + visible - 40) scroller.scrollLeft = x - 40;
@@ -284,6 +365,13 @@
   <header>
     <span class="tc">{timecode(studio.playhead)}</span>
     <div class="tools">
+      <button class="icon-btn" title="Undo (Ctrl + Z)" aria-label="Undo" disabled={!studio.canUndo} onclick={() => studio.undo()}>
+        <Icon name="undo" />
+      </button>
+      <button class="icon-btn" title="Redo (Ctrl + Y)" aria-label="Redo" disabled={!studio.canRedo} onclick={() => studio.redo()}>
+        <Icon name="redo" />
+      </button>
+      <span class="sep" aria-hidden="true"></span>
       <button class="icon-btn" title="Split at playhead (S)" aria-label="Split at playhead" disabled={!canSplit} onclick={() => studio.splitAtPlayhead()}>
         <Icon name="scissors" />
       </button>
@@ -292,6 +380,9 @@
       </button>
       <button class="icon-btn" title="Add music or voiceover" aria-label="Add audio" disabled={!studio.dir} onclick={addAudio}>
         <Icon name="music" />
+      </button>
+      <button class="icon-btn" title="Captions" aria-label="Captions" disabled={!studio.dir} onclick={() => editCaptions(null)}>
+        <Icon name="captions" />
       </button>
     </div>
     {#if selectedAudio}
@@ -372,11 +463,18 @@
               title="{clip.scene} · {shortTime(clip.out - clip.in)}"
             >
               <div class="handle left" role="presentation" onpointerdown={(e) => trim(e, clip, "in")}></div>
+              {#if clip.transition}
+                <span
+                  class="tr-badge {clip.transition.kind}"
+                  style:width="{Math.max(10, clip.transition.duration * studio.zoom)}px"
+                  title="{clip.transition.kind === 'fade' ? 'Fade through black' : 'Crossfade'} · {clip.transition.duration} s"
+                ></span>
+              {/if}
               <div class="clip-body">
                 <span class="clip-name">{clip.scene}</span>
                 <span class="clip-len">{shortTime(clip.out - clip.in)}</span>
               </div>
-              {#if r?.strip && r.stripFrames}
+              {#if r?.strip && r.stripFrames && settings.value.showFilmstrips}
                 {@const width = (clip.out - clip.in) * studio.zoom}
                 {@const tileW = 56}
                 {@const n = Math.max(1, Math.ceil(width / tileW))}
@@ -472,6 +570,46 @@
         </div>
       </div>
 
+      <!-- Captions track -->
+      <div class="row track-row cc-row">
+        <div class="head">
+          <span class="track-name">CC</span>
+          <span class="track-kind">Captions</span>
+        </div>
+        <div
+          class="lane"
+          role="list"
+          aria-label="Captions track"
+          oncontextmenu={captionLaneMenu}
+          onpointerdown={(e) => {
+            if (e.button !== 0) return;
+            studio.selectedClip = null;
+            seek(e);
+          }}
+        >
+          {#each studio.captions as c (c.id)}
+            <div
+              class="cc"
+              role="listitem"
+              class:selected={c.id === studio.selectedClip}
+              style:left="{c.start * studio.zoom}px"
+              style:width="{Math.max(4, (c.end - c.start) * studio.zoom)}px"
+              onpointerdown={(e) => moveCaption(e, c)}
+              ondblclick={() => editCaptions(c.id)}
+              oncontextmenu={(e) => captionMenu(e, c)}
+              title={c.text}
+            >
+              <span>{c.text.replace(/\n/g, " ")}</span>
+            </div>
+          {/each}
+          {#if !studio.captions.length}
+            <button class="lane-empty add" onpointerdown={(e) => e.stopPropagation()} onclick={() => editCaptions(null)}>
+              <Icon name="captions" size={13} /> Add captions
+            </button>
+          {/if}
+        </div>
+      </div>
+
       <div class="playhead" style:left="{HEADER_W + studio.playhead * studio.zoom}px">
         <div class="cap"></div>
       </div>
@@ -480,6 +618,56 @@
 </section>
 
 <style>
+  .tr-badge {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 2;
+    pointer-events: none;
+    border-radius: 9px 0 0 9px;
+  }
+  .tr-badge.fade {
+    background: linear-gradient(90deg, rgb(0 0 0 / 0.85), transparent);
+  }
+  .tr-badge.crossfade {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), transparent);
+  }
+  .cc-row {
+    height: 40px;
+  }
+  .cc {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    border-radius: 8px;
+    background: color-mix(in srgb, #f4d345 22%, var(--panel-2));
+    border: 1px solid color-mix(in srgb, #f4d345 40%, transparent);
+    color: var(--text);
+    font-size: 11px;
+    overflow: hidden;
+    cursor: grab;
+    user-select: none;
+  }
+  .cc span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cc.selected {
+    border-color: #f4d345;
+    box-shadow: 0 0 0 1px #f4d345;
+  }
+  .tools .sep {
+    align-self: center;
+    width: 1px;
+    height: 16px;
+    margin: 0 4px;
+    background: var(--line);
+  }
   .timeline {
     display: flex;
     flex-direction: column;

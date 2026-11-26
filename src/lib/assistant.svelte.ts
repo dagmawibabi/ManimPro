@@ -1,9 +1,9 @@
-import { api, basename, joinPath, type AgentEventPayload, type AgentStatus, type PendingAttachment, type Provider } from "./api";
+import { api, basename, joinPath, type AgentEventPayload, type AgentStatus, type FileChange, type PendingAttachment, type Provider } from "./api";
 import { studio } from "./studio.svelte";
 import { settings } from "./settings.svelte";
 import "./voice.svelte"; // registers the voiceover tools for assistants
 
-export type ItemKind = "user" | "assistant" | "tool" | "error" | "note" | "plan";
+export type ItemKind = "user" | "assistant" | "tool" | "error" | "note" | "plan" | "changes";
 
 export type Plan = { title: string; scenes: { file: string; scene: string; summary: string; seconds?: number }[] };
 
@@ -20,6 +20,10 @@ export type Item = {
   input?: Record<string, any>;
   /** Files attached to a user message (paths in the project). */
   files?: string[];
+  /** "changes" items: what a run changed, and the checkpoint taken before it. */
+  checkpoint?: string;
+  changes?: FileChange[];
+  reverted?: boolean;
 };
 
 export type Chat = {
@@ -68,6 +72,10 @@ function describeTool(name: string, input: Record<string, any> = {}, running = f
         return `Reading ${f || "a file"}…`;
       case "render_scene":
         return `Rendering ${input.scene ?? "the scene"}…`;
+      case "view_scene":
+        return `Looking at ${input.scene ?? "the scene"}…`;
+      case "view_timeline":
+        return "Watching the timeline…";
       case "arrange_timeline":
         return "Arranging the timeline…";
       case "outline_video":
@@ -98,6 +106,10 @@ function describeTool(name: string, input: Record<string, any> = {}, running = f
       return "Looked through the project";
     case "render_scene":
       return `Rendered ${input.scene ?? "a scene"}`;
+    case "view_scene":
+      return `Looked at ${input.scene ?? "a scene"}`;
+    case "view_timeline":
+      return "Watched the timeline";
     case "add_to_timeline":
       return `Added ${input.scene ?? "a scene"} to the timeline`;
     case "list_scenes":
@@ -139,7 +151,7 @@ export function toolKind(name = ""): "write" | "read" | "search" | "render" | "p
   if (/^(write|edit|multiedit)$/.test(n)) return "write";
   if (n === "read") return "read";
   if (/glob|grep|list$|search/.test(n)) return "search";
-  if (/render|timeline/.test(n)) return "render";
+  if (/render|timeline|view_scene/.test(n)) return "render";
   if (/outline|todo/.test(n)) return "plan";
   if (/voice/.test(n)) return "voice";
   return "other";
@@ -154,7 +166,16 @@ class Assistant {
   chats = $state<Chat[]>([]);
   activeId = $state<string | null>(null);
   run = $state<number | null>(null);
-  runChatId = $state<string | null>(null);
+  #runChat = $state<string | null>(null);
+  /** The chat a run belongs to. Set before the assistant process starts, cleared when it ends;
+   *  while set, the project's files, scenes and that chat can't be deleted. */
+  get runChatId() {
+    return this.#runChat;
+  }
+  set runChatId(id: string | null) {
+    this.#runChat = id;
+    studio.locked = id !== null;
+  }
 
   #dir: string | null = null;
   #logTail: string[] = [];
@@ -169,7 +190,7 @@ class Assistant {
 
   model = $derived(this.models[this.provider] ?? "");
   current = $derived(this.status[this.provider]);
-  busy = $derived(this.run !== null);
+  busy = $derived(this.run !== null || this.#runChat !== null);
   active = $derived(this.chats.find((c) => c.id === this.activeId) ?? null);
   items = $derived(this.active?.items ?? []);
   sortedChats = $derived([...this.chats].sort((a, b) => b.updated - a.updated));
@@ -272,8 +293,24 @@ class Assistant {
     if (chat && !this.busy) this.setProvider(chat.provider);
   }
 
+  #checkpoint: string | null = null;
+
+  /** Puts the project back the way it was before a run (its files and timeline). */
+  async revert(itemId: string) {
+    const item = this.items.find((i) => i.id === itemId);
+    if (!item?.checkpoint || !studio.dir || this.busy) return;
+    if (studio.dirty) await studio.save();
+    await api.checkpointRestore(studio.dir, item.checkpoint);
+    item.reverted = true;
+    const file = studio.activeFile;
+    await studio.openProject(studio.dir);
+    if (file && studio.files.includes(file)) await studio.openFile(file);
+    this.note("Undid the assistant's changes from this request. Files it created were moved to .manimpro/checkpoints.");
+    this.persist();
+  }
+
   deleteChat(id: string) {
-    if (this.runChatId === id && this.busy) return;
+    if (this.runChatId === id) return;
     this.chats = this.chats.filter((c) => c.id !== id);
     if (this.activeId === id) this.activeId = this.sortedChats[0]?.id ?? null;
     this.persist();
@@ -342,6 +379,8 @@ class Assistant {
     this.#rendered = false;
     this.runChatId = chat.id;
     this.persist();
+    // A copy of the project's files, so this run's edits can be undone.
+    this.#checkpoint = await api.checkpointCreate(studio.dir).catch(() => null);
     try {
       this.run = await api.agentRun({
         provider: this.provider,
@@ -361,12 +400,13 @@ class Assistant {
   private instructions(): string | null {
     const s = settings.value;
     const { id, w, h } = studio.aspectInfo;
+    const u = studio.frameUnits();
     const frame =
       id === "16:9"
         ? ""
         : `This project's video frame is ${id} (${w >= h ? "landscape" : "portrait"}): the visible area is ` +
-          `${w >= h ? `${((8 * w) / h).toFixed(2)} units wide and 8 units tall` : `8 units wide and ${((8 * h) / w).toFixed(2)} units tall`}` +
-          ` (config.frame_width / config.frame_height). Lay out and scale everything to fit that shape.`;
+          `${u.width.toFixed(2)} units wide and ${u.height.toFixed(2)} units tall (config.frame_width / config.frame_height). ` +
+          `Lay out and scale everything to fill that shape well, and keep every element inside it.`;
     const parts = [
       frame,
       s.multiSceneByDefault ? "" : "Keep the work in a single scene unless the user asks for more.",
@@ -485,6 +525,18 @@ class Assistant {
       this.run = null;
       this.runChatId = null;
       this.persist();
+      const cp = this.#checkpoint;
+      this.#checkpoint = null;
+      if (cp && chat && studio.dir) {
+        api
+          .checkpointChanges(studio.dir, cp)
+          .then((changes) => {
+            if (!changes.length) return;
+            chat.items.push({ id: uid(), kind: "changes", text: "", checkpoint: cp, changes });
+            this.persist();
+          })
+          .catch(() => {});
+      }
       const rendered = this.#rendered;
       studio.refreshFromDisk().then(() => {
         // Show the result even when the assistant didn't render it itself.

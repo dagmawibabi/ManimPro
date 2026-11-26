@@ -10,6 +10,7 @@
   import type { Item } from "#lib/assistant.svelte.ts";
   import { mediaUrl } from "#lib/api.ts";
   import Icon from "./Icon.svelte";
+  import { ask } from "@tauri-apps/plugin-dialog";
 
   let list: HTMLDivElement | undefined = $state();
   let box: PromptBox | undefined = $state();
@@ -45,6 +46,23 @@
     assistant.items.at(-1)?.text;
     if (list) list.scrollTop = list.scrollHeight;
   });
+
+  let reverting = $state<string | null>(null);
+  async function revert(id: string) {
+    const ok = await ask("Undo everything the assistant changed in this request? Files it edited go back to how they were, files it added are moved aside, and the timeline is restored.", {
+      title: "Undo changes",
+      kind: "warning",
+    });
+    if (!ok) return;
+    reverting = id;
+    try {
+      await assistant.revert(id);
+    } catch (e) {
+      studio.error = { message: String(e) };
+    } finally {
+      reverting = null;
+    }
+  }
 </script>
 
 <div class="panel">
@@ -97,6 +115,35 @@
           </div>
         {:else if item.kind === "assistant"}
           <div class="msg bot"><Markdown text={item.text} /></div>
+        {:else if item.kind === "changes" && item.changes}
+          {@const files = item.changes.filter((c) => c.path !== "project.json")}
+          {@const timeline = item.changes.some((c) => c.path === "project.json")}
+          <div class="changes" class:reverted={item.reverted}>
+            <div class="changes-head">
+              <Icon name="pencil" size={13} />
+              <span>
+                {item.reverted ? "Undone: " : ""}{files.length} {files.length === 1 ? "file" : "files"} changed{timeline ? " and the timeline" : ""}
+              </span>
+              {#if !item.reverted}
+                <button
+                  class="fix"
+                  disabled={assistant.busy || reverting === item.id}
+                  title="Put the files and timeline back the way they were before this request"
+                  onclick={() => revert(item.id)}
+                >
+                  <Icon name="undo" size={12} /> {reverting === item.id ? "Undoing…" : "Undo these changes"}
+                </button>
+              {/if}
+            </div>
+            {#if files.length}
+              <ul>
+                {#each files.slice(0, 8) as c (c.path)}
+                  <li><span class="st {c.status}">{c.status === "added" ? "new" : c.status === "deleted" ? "deleted" : "edited"}</span>{c.path}</li>
+                {/each}
+                {#if files.length > 8}<li class="more">and {files.length - 8} more</li>{/if}
+              </ul>
+            {/if}
+          </div>
         {:else if item.kind === "plan" && item.plan}
           <PlanCard plan={item.plan} />
         {:else if item.kind === "error"}
@@ -125,6 +172,66 @@
 </div>
 
 <style>
+  .changes {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    font-size: 12.5px;
+  }
+  .changes.reverted {
+    opacity: 0.65;
+  }
+  .changes-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+  }
+  .changes-head span {
+    flex: 1;
+  }
+  .changes ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 3px;
+  }
+  .changes li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-family: var(--mono, Consolas, monospace);
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .changes li.more {
+    color: var(--faint);
+    font-family: inherit;
+  }
+  .st {
+    flex: none;
+    width: 52px;
+    padding: 1px 0;
+    border-radius: 6px;
+    text-align: center;
+    font-family: inherit;
+    font-size: 10.5px;
+    background: var(--raised);
+    color: var(--muted);
+  }
+  .st.added {
+    color: #9fd88a;
+  }
+  .st.deleted {
+    color: #f3a39b;
+  }
   .panel {
     display: flex;
     flex-direction: column;

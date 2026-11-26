@@ -7,11 +7,74 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Manager};
 
-pub fn projects_root() -> Result<PathBuf, String> {
+fn default_root() -> Result<PathBuf, String> {
     Ok(dirs::document_dir()
         .or_else(dirs::home_dir)
         .ok_or("Could not find your Documents folder.")?
         .join("ManimPro"))
+}
+
+/// Where the user chose to keep projects (Settings), stored outside localStorage so
+/// the Rust side can read it without the UI.
+fn root_setting_file() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("dev.manimpro.app").join("projects-root.txt"))
+}
+
+pub fn projects_root() -> Result<PathBuf, String> {
+    if let Some(chosen) = root_setting_file()
+        .and_then(|f| fs::read_to_string(f).ok())
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty() && p.is_dir())
+    {
+        return Ok(chosen);
+    }
+    default_root()
+}
+
+#[derive(Serialize)]
+pub struct RootInfo {
+    path: String,
+    default: String,
+    /// A folder outside OneDrive the UI can suggest.
+    local: String,
+    onedrive: bool,
+}
+
+fn in_onedrive(p: &Path) -> bool {
+    let s = p.to_string_lossy().to_lowercase();
+    s.contains("\\onedrive") || std::env::var("OneDrive").is_ok_and(|o| !o.is_empty() && s.starts_with(&o.to_lowercase()))
+}
+
+#[tauri::command]
+pub fn get_projects_root() -> Result<RootInfo, String> {
+    let path = projects_root()?;
+    let local = dirs::home_dir().ok_or("No home folder.")?.join("ManimPro");
+    Ok(RootInfo {
+        onedrive: in_onedrive(&path),
+        path: path.to_string_lossy().into_owned(),
+        default: default_root()?.to_string_lossy().into_owned(),
+        local: local.to_string_lossy().into_owned(),
+    })
+}
+
+/// Sets (or with None, resets) the folder new projects are created in.
+#[tauri::command]
+pub fn set_projects_root(path: Option<String>) -> Result<RootInfo, String> {
+    let file = root_setting_file().ok_or("No settings folder.")?;
+    match path {
+        Some(p) => {
+            let dir = PathBuf::from(p.trim());
+            fs::create_dir_all(&dir).map_err(|e| format!("Could not use that folder: {e}"))?;
+            if let Some(parent) = file.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&file, dir.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        }
+        None => {
+            let _ = fs::remove_file(&file);
+        }
+    }
+    get_projects_root()
 }
 
 fn recent_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -26,6 +89,38 @@ fn read_recent(app: &AppHandle) -> Vec<String> {
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
+}
+
+fn write_recent(app: &AppHandle, list: &[String]) {
+    if let Ok(p) = recent_file(app) {
+        let _ = fs::write(p, serde_json::to_string_pretty(list).unwrap_or_default());
+    }
+}
+
+/// Takes a project off the Recent list (the folder stays).
+#[tauri::command]
+pub fn forget_recent(app: AppHandle, dir: String) {
+    let mut list = read_recent(&app);
+    list.retain(|d| !d.eq_ignore_ascii_case(&dir));
+    write_recent(&app, &list);
+}
+
+/// Moves a project folder to the Recycle Bin. Only folders that are ManimPro
+/// projects (under the projects folder, or on the Recent list) qualify.
+#[tauri::command]
+pub fn delete_project(app: AppHandle, dir: String) -> Result<(), String> {
+    let path = PathBuf::from(&dir);
+    let root = projects_root()?;
+    let canon = |p: &Path| fs::canonicalize(p).map_err(|e| e.to_string());
+    let target = canon(&path)?;
+    let under_root = canon(&root).map(|r| target.starts_with(&r) && target != r).unwrap_or(false);
+    let known = read_recent(&app).iter().any(|d| d.eq_ignore_ascii_case(&dir));
+    if !(under_root || known) || target.parent().is_none() || !target.is_dir() {
+        return Err("Only ManimPro project folders can be deleted here.".into());
+    }
+    crate::recycle(&path)?;
+    forget_recent(app, dir);
+    Ok(())
 }
 
 pub fn touch_recent(app: &AppHandle, dir: &str) {
@@ -46,6 +141,38 @@ pub struct ProjectSummary {
     scenes: usize,
     clips: usize,
     thumbnail: Option<String>,
+    /** A rendered video to preview on hover: the first clip's scene, else the latest render. */
+    preview: Option<String>,
+}
+
+fn preview_video(project: &Value) -> Option<String> {
+    let renders = project.get("renders")?.as_object()?;
+    let video = |key: &str| {
+        renders
+            .get(key)
+            .and_then(|r| r.get("video"))
+            .and_then(Value::as_str)
+            .filter(|v| Path::new(v).is_file())
+            .map(str::to_string)
+    };
+    let mut clips: Vec<&Value> = project.get("clips").and_then(Value::as_array).map(|c| c.iter().collect()).unwrap_or_default();
+    clips.sort_by(|a, b| {
+        let s = |c: &Value| c.get("start").and_then(Value::as_f64).unwrap_or(0.0);
+        s(a).partial_cmp(&s(b)).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for c in clips {
+        if let (Some(f), Some(s)) = (c.get("file").and_then(Value::as_str), c.get("scene").and_then(Value::as_str)) {
+            if let Some(v) = video(&format!("{f}::{s}")) {
+                return Some(v);
+            }
+        }
+    }
+    let mut latest: Vec<(&String, f64)> = renders
+        .iter()
+        .map(|(k, r)| (k, r.get("version").and_then(Value::as_f64).unwrap_or(0.0)))
+        .collect();
+    latest.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    latest.into_iter().find_map(|(k, _)| video(k))
 }
 
 fn summarize(dir: &Path) -> Option<ProjectSummary> {
@@ -65,11 +192,14 @@ fn summarize(dir: &Path) -> Option<ProjectSummary> {
             modified = modified.max(m.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0));
         }
     }
-    let clips = fs::read_to_string(dir.join("project.json"))
+    let project = fs::read_to_string(dir.join("project.json"))
         .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    let clips = project
+        .as_ref()
         .and_then(|v| v.get("clips").and_then(Value::as_array).map(Vec::len))
         .unwrap_or(0);
+    let preview = project.as_ref().and_then(preview_video);
     let thumb = dir.join(".manimpro").join("thumb.jpg");
     Some(ProjectSummary {
         name: dir.file_name()?.to_string_lossy().into_owned(),
@@ -78,6 +208,7 @@ fn summarize(dir: &Path) -> Option<ProjectSummary> {
         scenes,
         clips,
         thumbnail: thumb.is_file().then(|| thumb.to_string_lossy().into_owned()),
+        preview,
     })
 }
 
@@ -200,7 +331,7 @@ fn attachments_dir(project_dir: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn unique_file(dir: &Path, name: &str) -> PathBuf {
+pub fn unique_file(dir: &Path, name: &str) -> PathBuf {
     let safe: String = name
         .chars()
         .map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c })

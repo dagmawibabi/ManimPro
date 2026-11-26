@@ -17,6 +17,7 @@ import os
 import queue
 import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import traceback
@@ -42,9 +43,15 @@ def event(kind: str, **data) -> None:
 
 # --- Manim setup -------------------------------------------------------------
 import manim  # noqa: E402
+# Extra packages the user added in Settings go LAST, so ManimPro's own manim and numpy win.
+_extra = os.environ.get("MANIMPRO_PACKAGES")
+if _extra and os.path.isdir(_extra) and _extra not in sys.path:
+    sys.path.append(_extra)
+
 from manim import Scene, config, tempconfig  # noqa: E402
 
 QUALITY = {
+    "fast": "low_quality",  # 360p @12, see FAST below
     "preview": "low_quality",  # 854x480 @15
     "draft": "medium_quality",  # 1280x720 @30
     "high": "high_quality",  # 1920x1080 @60
@@ -143,6 +150,43 @@ def m_list_scenes(params: dict) -> dict:
     return {"scenes": scenes}
 
 
+class _InFolder:
+    """Runs a block with the scene's folder as the working directory, so relative
+    paths in user code (ImageMobject("logo.png"), SVGMobject("icons/x.svg"),
+    open("data.csv")) resolve the way they do with the manim command line."""
+
+    def __init__(self, path: str):
+        self.folder = str(Path(path).parent)
+
+    def __enter__(self):
+        self.before = os.getcwd()
+        try:
+            os.chdir(self.folder)
+        except OSError:
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            os.chdir(self.before)
+        except OSError:
+            pass
+        return False
+
+
+def _folder_cfg(path: str) -> str | None:
+    """A manim.cfg next to the scene file (or in a parent folder, up to three levels)."""
+    p = Path(path).parent
+    for _ in range(4):
+        cfg = p / "manim.cfg"
+        if cfg.is_file():
+            return str(cfg)
+        if p.parent == p:
+            break
+        p = p.parent
+    return None
+
+
 def _load_module(path: str):
     folder = str(Path(path).parent)
     if folder not in sys.path:
@@ -187,7 +231,8 @@ def m_render(params: dict, job_id) -> dict:
     still = bool(params.get("still", False))
     media_dir = params["mediaDir"]
 
-    module = _load_module(path)
+    with _InFolder(path):
+        module = _load_module(path)
     cls = getattr(module, scene_name, None)
     if cls is None:
         raise RuntimeError(f"Scene {scene_name} was not found in {Path(path).name}.")
@@ -208,23 +253,47 @@ def m_render(params: dict, job_id) -> dict:
     aspect = params.get("aspect")
     if aspect:
         aw, ah = float(aspect[0]), float(aspect[1])
-        short = QUALITY_HEIGHT.get(quality, 480)
+        short = 360 if params.get("quality") == "fast" else QUALITY_HEIGHT.get(quality, 480)
         even = lambda v: int(round(v / 2)) * 2
+        ratio = aw / ah
         if aw >= ah:
             overrides["pixel_height"] = short
-            overrides["pixel_width"] = even(short * aw / ah)
-            overrides["frame_height"] = 8.0
-            overrides["frame_width"] = 8.0 * aw / ah
+            overrides["pixel_width"] = even(short * ratio)
         else:
             overrides["pixel_width"] = short
-            overrides["pixel_height"] = even(short * ah / aw)
+            overrides["pixel_height"] = even(short / ratio)
+        wide = 8.0 * 16 / 9
+        if params.get("fit", True) and ratio < 16 / 9:
+            # Fit: the whole 16:9 layout stays visible; the extra room is above and below.
+            overrides["frame_width"] = wide
+            overrides["frame_height"] = wide / ratio
+        elif aw >= ah:
+            overrides["frame_height"] = 8.0
+            overrides["frame_width"] = 8.0 * ratio
+        else:
+            # Fill: the short side is 8 units, so a 16:9 layout is cut at the sides.
             overrides["frame_width"] = 8.0
-            overrides["frame_height"] = 8.0 * ah / aw
+            overrides["frame_height"] = 8.0 / ratio
+    if params.get("quality") == "fast":
+        overrides["frame_rate"] = 12
     # A scene that sets self.camera.background_color itself still wins.
     if params.get("background"):
         overrides["background_color"] = params["background"]
     _current_job["id"] = job_id
-    with tempconfig(overrides):
+    cfg = _folder_cfg(path)
+    with _InFolder(path), tempconfig(overrides):
+        if cfg:
+            # The project's own manim.cfg (colors, frame rate, tex template...) first,
+            # then ManimPro's settings for where and how big to render.
+            try:
+                config.digest_file(cfg)
+            except Exception as e:  # noqa: BLE001 - a broken cfg should not stop the render
+                print(f"Ignoring {cfg}: {e}", file=sys.stderr)
+            config.update({k: v for k, v in overrides.items() if k != "quality"})
+            config.quality = overrides["quality"]
+            for k in ("pixel_width", "pixel_height", "frame_width", "frame_height"):
+                if k in overrides:
+                    config[k] = overrides[k]
         scene = cls()
         scene.render()
         writer = scene.renderer.file_writer
@@ -333,49 +402,80 @@ def m_audio_info(params: dict) -> dict:
 
 
 def m_export(params: dict, job_id) -> dict:
-    """Cut the timeline into one MP4.
+    """Put the timeline together into one video (or GIF / image sequence).
 
-    clips: [{path, start, in, out}] (seconds on the timeline / in the source)
+    clips: [{path, start, in, out, transition?: {kind: "fade"|"crossfade", duration}}]
+    audio: [{path, start, in, out, volume}]
+    captions: [{start, end, text}]  burnCaptions: bool  srt: bool
+    format: mp4 | webm | mov | gif | png
     """
     clips = sorted(params["clips"], key=lambda c: c["start"])
     out = params["output"]
+    fmt = params.get("format", "mp4")
     w, h, fps = int(params["width"]), int(params["height"]), int(params["fps"])
     if not clips:
         raise RuntimeError("The timeline is empty. Add a scene before exporting.")
 
+    def length(c):
+        return c["out"] - c["in"]
+
+    total = max([float(params.get("total") or 0)] + [c["start"] + length(c) for c in clips])
     args = [ffmpeg_exe(), "-y", "-hide_banner", "-nostdin"]
-    filters, labels = [], []
-    cursor = 0.0
-    idx = 0
-
-    def add_gap(seconds: float):
-        nonlocal idx
-        args.extend(["-f", "lavfi", "-t", f"{seconds:.4f}", "-i", f"color=c=black:s={w}x{h}:r={fps}"])
-        filters.append(f"[{idx}:v]format=yuv420p,setsar=1[v{idx}]")
-        labels.append(f"[v{idx}]")
-        idx += 1
-
-    for c in clips:
-        if c["start"] > cursor + 1e-3:
-            add_gap(c["start"] - cursor)
-        args.extend(["-i", c["path"]])
-        filters.append(
+    # A black canvas the length of the timeline; every clip is laid over it at its start time,
+    # so gaps stay black and transitions can overlap neighbouring clips.
+    args += ["-f", "lavfi", "-t", f"{total:.4f}", "-i", f"color=c=black:s={w}x{h}:r={fps}"]
+    filters = ["[0:v]format=yuva420p[base]"]
+    below = "[base]"
+    idx = 1
+    for i, c in enumerate(clips):
+        prev = clips[i - 1] if i else None
+        nxt = clips[i + 1] if i + 1 < len(clips) else None
+        L = length(c)
+        args += ["-i", c["path"]]
+        chain = (
             f"[{idx}:v]trim=start={c['in']:.4f}:end={c['out']:.4f},setpts=PTS-STARTPTS,"
             f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,fps={fps},format=yuv420p,setsar=1[v{idx}]"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,fps={fps},format=yuva420p"
         )
-        labels.append(f"[v{idx}]")
+        tr = c.get("transition") or {}
+        d = min(float(tr.get("duration") or 0), L)
+        if tr.get("kind") == "fade" and d > 0:
+            chain += f",fade=t=in:st=0:d={d / 2:.4f}"
+        elif tr.get("kind") == "crossfade" and d > 0 and prev and abs(prev["start"] + length(prev) - c["start"]) < 0.05:
+            # Dissolve in over the previous clip (whose last frame is held underneath).
+            chain += f",fade=t=in:st=0:d={d:.4f}:alpha=1"
+        ntr = (nxt or {}).get("transition") or {}
+        nd = min(float(ntr.get("duration") or 0), length(nxt)) if nxt else 0
+        if ntr.get("kind") == "fade" and nd > 0:
+            chain += f",fade=t=out:st={max(0.0, L - nd / 2):.4f}:d={nd / 2:.4f}"
+        elif ntr.get("kind") == "crossfade" and nd > 0 and abs(c["start"] + L - nxt["start"]) < 0.05:
+            chain += f",tpad=stop_mode=clone:stop_duration={nd:.4f}"
+        chain += f",setpts=PTS+{c['start']:.4f}/TB[v{idx}]"
+        filters.append(chain)
+        filters.append(f"{below}[v{idx}]overlay=eof_action=pass:format=auto[o{idx}]")
+        below = f"[o{idx}]"
         idx += 1
-        cursor = c["start"] + (c["out"] - c["in"])
 
-    if float(params.get("total") or 0) > cursor + 1e-3:
-        add_gap(float(params["total"]) - cursor)
-        cursor = float(params["total"])
-    total = cursor
-    graph = ";".join(filters) + ";" + "".join(labels) + f"concat=n={len(labels)}:v=1:a=0[out]"
+    # Captions: an .srt beside the video, and optionally burned into the picture.
+    captions = [c for c in params.get("captions") or [] if c.get("text", "").strip() and c["end"] > c["start"]]
+    srt_text = _srt(captions)
+    work = tempfile.mkdtemp(prefix="manimpro-export-")
+    finish = f"{below}format=yuv420p"
+    if captions and params.get("burnCaptions"):
+        Path(work, "captions.srt").write_text(srt_text, encoding="utf-8")
+        size = max(14, round(h / 22))
+        style = (f"FontName=Arial,FontSize={size},PrimaryColour=&H00FFFFFF,BackColour=&H99000000,"
+                 f"BorderStyle=3,Outline=6,Shadow=0,MarginV={round(h / 18)}")
+        # libass sizes fonts against a 288-line canvas unless told the real size.
+        finish += f",subtitles=captions.srt:original_size={w}x{h}:force_style='{style}'"
+    if fmt == "gif":
+        gw = min(w, 720)
+        finish += (f",fps={min(fps, 15)},scale={gw}:-2:flags=lanczos,split[g1][g2];"
+                   f"[g1]palettegen=stats_mode=diff[pal];[g2][pal]paletteuse=dither=bayer:bayer_scale=4")
+    graph = ";".join(filters) + ";" + finish + "[out]"
 
-    # Audio track: trim each clip, set its volume, delay it to its timeline position, mix.
-    audio = [a for a in params.get("audio", []) if a["start"] < total]
+    audio_fmt = fmt in ("mp4", "webm", "mov")
+    audio = [a for a in params.get("audio", []) if a["start"] < total] if audio_fmt else []
     amix = []
     for a in audio:
         args.extend(["-i", a["path"]])
@@ -390,18 +490,29 @@ def m_export(params: dict, job_id) -> dict:
     maps = ["-map", "[out]"]
     if amix:
         graph += ";" + "".join(amix) + f"amix=inputs={len(amix)}:normalize=0:duration=longest,atrim=end={total:.4f}[aout]"
-        maps += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
+        maps += ["-map", "[aout]"]
+        maps += {"mp4": ["-c:a", "aac", "-b:a", "192k"], "webm": ["-c:a", "libopus", "-b:a", "160k"],
+                 "mov": ["-c:a", "pcm_s16le"]}[fmt]
 
-    args += [
-        "-filter_complex", graph, *maps,
-        "-c:v", "libx264", "-preset", "medium", "-crf", str(int(params.get("crf", 18))), "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out,
-    ]
+    crf = int(params.get("crf", 18))
+    codec = {
+        "mp4": ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        "webm": ["-c:v", "libvpx-vp9", "-crf", str(min(63, crf + 12)), "-b:v", "0", "-row-mt", "1",
+                 "-deadline", "good", "-cpu-used", "4", "-pix_fmt", "yuv420p"],
+        "mov": ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"],
+        "gif": ["-loop", "0"],
+        "png": ["-c:v", "png"],
+    }[fmt]
+    target = out
+    if fmt == "png":
+        Path(out).mkdir(parents=True, exist_ok=True)
+        target = str(Path(out) / "frame_%05d.png")
+    args += ["-filter_complex", graph, *maps, *codec, "-t", f"{total:.4f}", "-progress", "pipe:1", "-nostats", target]
 
     flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
-    # stdin must not be inherited: it is our protocol pipe.
+    # stdin must not be inherited: it is our protocol pipe. cwd holds captions.srt.
     proc = subprocess.Popen(
-        args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=flags
+        args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=flags, cwd=work
     )
     err_lines: list[str] = []
     threading.Thread(target=lambda: err_lines.extend(proc.stderr), daemon=True).start()
@@ -413,9 +524,25 @@ def m_export(params: dict, job_id) -> dict:
             except ValueError:
                 pass
     code = proc.wait()
+    shutil.rmtree(work, ignore_errors=True)
     if code != 0:
         raise RuntimeError("FFmpeg failed:\n" + "".join(err_lines[-20:]))
-    return {"output": out, "duration": total}
+    srt_path = None
+    if captions and params.get("srt") and fmt != "png":
+        srt_path = str(Path(out).with_suffix(".srt"))
+        Path(srt_path).write_text(srt_text, encoding="utf-8")
+    return {"output": out, "duration": total, "srt": srt_path}
+
+
+def _srt(captions: list[dict]) -> str:
+    def ts(t: float) -> str:
+        ms = int(round(max(0.0, t) * 1000))
+        return f"{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}"
+
+    blocks = []
+    for i, c in enumerate(sorted(captions, key=lambda c: c["start"]), 1):
+        blocks.append(f"{i}\n{ts(c['start'])} --> {ts(c['end'])}\n{c['text'].strip()}\n")
+    return "\n".join(blocks)
 
 
 # --- Dispatch ----------------------------------------------------------------

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { languageOf } from "#lib/filetypes.ts";
   import { onMount } from "svelte";
   import type * as Monaco from "monaco-editor";
   import { studio } from "#lib/studio.svelte.ts";
@@ -18,6 +19,8 @@
       minimap: { enabled: s.minimap },
       lineNumbers: (s.lineNumbers ? "on" : "off") as "on" | "off",
       stickyScroll: { enabled: s.stickyScroll },
+      bracketPairColorization: { enabled: s.bracketColors },
+      renderWhitespace: (s.showWhitespace ? "boundary" : "none") as "boundary" | "none",
     };
   }
 
@@ -157,6 +160,8 @@
   $effect(() => {
     studio.docVersion;
     if (!editor) return;
+    const model = editor.getModel();
+    if (model && monaco) monaco.editor.setModelLanguage(model, languageOf(studio.activeFile));
     const text = studio.code;
     if (editor.getValue() === text) return;
     applying = true;

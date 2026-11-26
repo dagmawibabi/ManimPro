@@ -24,23 +24,21 @@ INDEX = ROOT / "src" / "lib" / "templates.json"
 META = [
     ("blank", "Blank project", "An empty scene to start from.", "Basics", False, None),
     ("calculus-area", "Area under a curve", "Rectangles shrink toward the exact area, then the area function reveals dA/dx = f(x). 3 scenes, inspired by Essence of Calculus.", "Math", False, "RiemannSums"),
-    ("fourier-square-wave", "Fourier series: a square wave from sines", "Add sine waves one by one, then watch spinning circles draw the wave. 2 scenes, inspired by \u201cBut what is a Fourier series?\u201d", "Math", False, "AddingSines"),
+    ("fourier-square-wave", "Fourier series: a square wave from sines", "Add sine waves one by one, then watch spinning circles draw the wave. 2 scenes, inspired by “But what is a Fourier series?”", "Math", False, "AddingSines"),
     ("linear-transform", "Linear transformations", "Basis vectors, a shear, a rotation and the determinant as area. 4 scenes, inspired by Essence of Linear Algebra.", "Math", False, "Determinant"),
-    ("euler-formula", "Euler's formula: e^i\u03c0 = \u22121", "Multiplying by i as a quarter turn, then e^i\u03b8 walking the unit circle. 2 scenes.", "Math", False, "AroundTheCircle"),
+    ("equation-steps", "The quadratic formula, derived", "Complete the square step by step, then check the formula on a parabola's roots. 3 scenes (MathTex).", "Math", True, "CompleteSquare"),
+    ("euler-formula", "Euler's formula: e^iπ = −1", "Multiplying by i as a quarter turn, then e^iθ walking the unit circle. 2 scenes.", "Math", False, "AroundTheCircle"),
     ("taylor-series", "Taylor series of sin(x)", "Polynomials of growing degree hug the sine curve over a wider range. 2 scenes.", "Math", False, "Approximations"),
     ("pythagoras", "Pythagorean theorem, by rearrangement", "The same four triangles in one square, arranged two ways. 2 scenes.", "Math", False, "Rearrange"),
+    ("surface-3d", "Functions of two variables", "A surface rises from the plane with an orbiting camera, then a moving slice turns it into a 1D graph. 2 scenes, 3D.", "3D", False, "Surface3D"),
     ("bayes-theorem", "Bayes' theorem as areas", "Librarian or farmer? Prior odds and evidence drawn as areas. 4 scenes, inspired by 3Blue1Brown's Bayes video.", "Probability", False, "Evidence"),
     ("central-limit", "Central limit theorem", "Averages of more and more dice pile up into a bell curve. 2 scenes.", "Probability", False, "AddingDice"),
+    ("monte-carlo-pi", "Estimating π with random darts", "Why the share of darts inside a quarter circle is π/4, then 1,200 throws with a live estimate. 2 scenes.", "Probability", False, "Throwing"),
+    ("neural-network", "How a neural network makes a guess", "Layers and weights, the maths inside one neuron, then a forward pass that picks a label. 3 scenes.", "Computer science", False, "ForwardPass"),
+    ("gradient-descent", "Gradient descent", "A ball steps downhill along the slope, then three learning rates race: too small, too big, about right. 2 scenes.", "Computer science", False, "LearningRate"),
+    ("sorting", "Bubble sort vs merge sort", "Neighbour swaps against split-and-merge on the same list, with comparisons counted. 3 scenes.", "Computer science", False, "MergeSort"),
+    ("graph-search", "Breadth-first vs depth-first search", "The same graph searched with a queue, then a stack, with the visit order written out. 2 scenes.", "Computer science", False, "BreadthFirst"),
     ("binary-search", "Binary search", "L, M and R pointers halve the range until the target is found. Edit the list and target. 2 scenes.", "Computer science", False, "Search"),
-    ("neural-network", "Neural network", "Signals pulse forward through a small network.", "Computer science", False, "NeuralNetwork"),
-    ("graph-search", "Breadth-first search", "A search spreads through a graph, layer by layer.", "Computer science", False, "BreadthFirst"),
-    ("sorting", "Bubble sort", "Bars compare and swap until the list is sorted.", "Computer science", False, "BubbleSort"),
-    ("code-walkthrough", "Code walkthrough", "A code snippet highlighted line by line with notes.", "Computer science", False, "CodeWalkthrough"),
-    ("explainer", "Three-part explainer", "Hook, key idea and outro: a ready-made story you can re-word.", "Storytelling", False, "KeyIdea"),
-    ("logo-reveal", "Logo reveal", "Tiles fly in, lock into a mark and the brand name writes on.", "Motion design", False, "LogoReveal"),
-    ("surface-3d", "3D ripple surface", "A rippling surface with a slowly orbiting camera.", "3D", False, "Ripple3D"),
-    ("pendulum", "Damped pendulum", "A simulated pendulum swings down and leaves a fading trail.", "Physics", False, "Pendulum"),
-    ("equation-steps", "Solve an equation", "Step-by-step algebra where matching terms glide into place (MathTex).", "Math", True, "SolveEquation"),
 ]
 
 
@@ -107,6 +105,7 @@ def main() -> None:
             "id": tid, "title": title, "description": desc, "category": category, "latex": latex,
             "scenes": scenes, "thumbnail": previous.get(tid, {}).get("thumbnail"),
             "duration": previous.get(tid, {}).get("duration"),
+            "preview": previous.get(tid, {}).get("preview"),
         }
         index.append(entry)
         if not thumb_scene or (only and tid not in only):
@@ -119,6 +118,8 @@ def main() -> None:
             for scene in scenes:
                 video = render(path, scene, media)
                 d = thumbnail(video, THUMBS / f"{tid}.jpg") if scene == thumb_scene else None
+                if scene == thumb_scene:
+                    shutil.copyfile(video, THUMBS / f"{tid}.mp4")
                 if d is None:
                     import av
 
@@ -126,6 +127,7 @@ def main() -> None:
                         d = float(c.duration / 1_000_000)
                 total += d
             entry["thumbnail"] = f"/templates/{tid}.jpg"
+            entry["preview"] = f"/templates/{tid}.mp4"
             entry["duration"] = round(total, 1)
             print(f"ok    {tid}  {total:.1f}s")
         except Exception:  # noqa: BLE001 - report every broken template, keep going

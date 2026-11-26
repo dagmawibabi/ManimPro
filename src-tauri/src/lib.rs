@@ -1,7 +1,9 @@
 mod agents;
 mod bridge;
 mod catalog;
+mod checkpoints;
 mod latex;
+mod packages;
 mod projects;
 mod voice;
 mod worker;
@@ -25,6 +27,7 @@ struct ProjectInfo {
     folders: Vec<String>,
     /// Audio files under assets/.
     audio: Vec<String>,
+    others: Vec<String>,
     timeline: Option<Value>,
 }
 
@@ -32,11 +35,22 @@ const AUDIO_EXT: &[&str] = &["mp3", "wav", "m4a", "aac", "ogg", "flac", "opus"];
 
 /// Folders ManimPro manages itself; they never show in the file tree.
 fn hidden_dir(name: &str) -> bool {
-    name.starts_with('.') || name == "__pycache__" || name == "assets" || name == "media" || name == "node_modules"
+    let n = name.to_ascii_lowercase();
+    name.starts_with('.')
+        || ["__pycache__", "assets", "media", "node_modules", "venv", "env", "site-packages", "build", "dist", "target"]
+            .contains(&n.as_str())
 }
 
-fn walk(dir: &Path, depth: usize, files: &mut Vec<String>, folders: &mut Vec<String>) {
-    if depth > 6 {
+/// Opening a very large folder (a home folder, a drive) must not hang the app.
+const MAX_FILES: usize = 2000;
+const MAX_FOLDERS: usize = 800;
+
+fn walk(dir: &Path, depth: usize, files: &mut Vec<String>, folders: &mut Vec<String>, others: &mut Vec<String>) {
+    if depth > 6 || files.len() >= MAX_FILES || folders.len() >= MAX_FOLDERS {
+        return;
+    }
+    // A virtual environment (pyvenv.cfg) is never part of the video.
+    if depth > 0 && dir.join("pyvenv.cfg").is_file() {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else { return };
@@ -46,10 +60,13 @@ fn walk(dir: &Path, depth: usize, files: &mut Vec<String>, folders: &mut Vec<Str
         if p.is_dir() {
             if !hidden_dir(&name) {
                 folders.push(p.to_string_lossy().into_owned());
-                walk(&p, depth + 1, files, folders);
+                walk(&p, depth + 1, files, folders, others);
             }
         } else if p.extension().is_some_and(|x| x == "py") {
             files.push(p.to_string_lossy().into_owned());
+        } else if !(depth == 0 && name.eq_ignore_ascii_case("project.json")) && others.len() < MAX_FILES {
+            // Data, images and notes: shown in the tree so people (and assistants) can use them.
+            others.push(p.to_string_lossy().into_owned());
         }
     }
 }
@@ -74,8 +91,9 @@ fn scan_project(dir: &Path) -> Result<ProjectInfo, String> {
     if !dir.is_dir() {
         return Err(format!("{} is not a folder.", dir.display()));
     }
-    let (mut files, mut folders, mut audio) = (Vec::new(), Vec::new(), Vec::new());
-    walk(dir, 0, &mut files, &mut folders);
+    let (mut files, mut folders, mut audio, mut others) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    walk(dir, 0, &mut files, &mut folders, &mut others);
+    others.sort_by_key(|f| f.to_lowercase());
     walk_audio(&dir.join("assets"), 0, &mut audio);
     files.sort_by_key(|f| f.to_lowercase());
     folders.sort_by_key(|f| f.to_lowercase());
@@ -89,6 +107,7 @@ fn scan_project(dir: &Path) -> Result<ProjectInfo, String> {
         files,
         folders,
         audio,
+        others,
         timeline,
     })
 }
@@ -109,6 +128,47 @@ fn clean_name(name: &str) -> Result<String, String> {
         return Err("Use a name without / \\ : * ? \" < > |".into());
     }
     Ok(n.to_string())
+}
+
+/// A folder passed on the command line ("Open in ManimPro" in File Explorer),
+/// handed out once so a reload doesn't reopen it.
+#[tauri::command]
+fn launch_path(state: tauri::State<LaunchPath>) -> Option<String> {
+    state.0.lock().ok()?.take()
+}
+
+pub struct LaunchPath(std::sync::Mutex<Option<String>>);
+
+/// Copies files the user picked into a project folder (never overwriting); returns the new paths.
+#[tauri::command]
+fn import_files(project: String, folder: String, sources: Vec<String>) -> Result<Vec<String>, String> {
+    let folder = PathBuf::from(&folder);
+    if folder != Path::new(&project) {
+        inside(Path::new(&project), &folder)?;
+    }
+    let mut out = Vec::new();
+    for src in sources {
+        let src = PathBuf::from(src);
+        let name = src.file_name().ok_or("Bad file name.")?.to_string_lossy().into_owned();
+        let dest = projects::unique_file(&folder, &name);
+        fs::copy(&src, &dest).map_err(|e| format!("Could not copy {name}: {e}"))?;
+        out.push(dest.to_string_lossy().into_owned());
+    }
+    Ok(out)
+}
+
+/// Writes a file dropped from outside the app (its bytes, base64) into a project folder.
+#[tauri::command]
+fn import_file_data(project: String, folder: String, name: String, data: String) -> Result<String, String> {
+    use base64::Engine;
+    let folder = PathBuf::from(&folder);
+    if folder != Path::new(&project) {
+        inside(Path::new(&project), &folder)?;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).map_err(|e| e.to_string())?;
+    let dest = projects::unique_file(&folder, &clean_name(&name)?);
+    fs::write(&dest, bytes).map_err(|e| e.to_string())?;
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -172,6 +232,11 @@ fn move_path(project: String, path: String, into: String) -> Result<String, Stri
 fn trash_path(project: String, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     inside(Path::new(&project), &p)?;
+    recycle(&p)
+}
+
+/// Sends a file or folder to the Windows Recycle Bin.
+pub(crate) fn recycle(p: &Path) -> Result<(), String> {
     let kind = if p.is_dir() { "DeleteDirectory" } else { "DeleteFile" };
     let script = format!(
         "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::{kind}($env:MP_TRASH, 'OnlyErrorDialogs', 'SendToRecycleBin')"
@@ -273,6 +338,9 @@ pub fn run() {
         .manage(Worker::new())
         .manage(agents::Agents::new())
         .manage(bridge::Bridge::new())
+        .manage(LaunchPath(std::sync::Mutex::new(
+            std::env::args().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_dir()),
+        )))
         .setup(|app| {
             bridge::Bridge::start(app.handle())?;
             // Warm up manim in the background so the first preview is fast.
@@ -289,6 +357,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_project,
+            launch_path,
+            import_files,
+            import_file_data,
             read_text,
             write_text,
             create_scene_file,
@@ -304,6 +375,17 @@ pub fn run() {
             projects::save_attachment,
             projects::save_attachment_data,
             projects::rename_project,
+            projects::delete_project,
+            projects::get_projects_root,
+            checkpoints::checkpoint_create,
+            checkpoints::checkpoint_changes,
+            checkpoints::checkpoint_restore,
+            packages::packages_list,
+            packages::music_library,
+            packages::packages_install,
+            packages::packages_remove,
+            projects::set_projects_root,
+            projects::forget_recent,
             agents::agent_status,
             agents::agent_models,
             agents::agent_login,

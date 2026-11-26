@@ -5,6 +5,65 @@
   import { ui } from "#lib/ui.svelte.ts";
   import Icon from "./Icon.svelte";
   import PythonIcon from "./PythonIcon.svelte";
+  import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
+  import { ask } from "@tauri-apps/plugin-dialog";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import type { SceneInfo } from "#lib/api.ts";
+
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  let renaming = $state<{ file: string; scene: string; value: string } | null>(null);
+  let error = $state<string | null>(null);
+
+  async function attempt(fn: () => Promise<unknown>) {
+    error = null;
+    try {
+      await fn();
+    } catch (e) {
+      error = (e as { message?: string }).message ?? String(e);
+    }
+  }
+
+  function sceneMenu(e: MouseEvent, file: string, s: SceneInfo) {
+    e.preventDefault();
+    const key = sceneKey(file, s.name);
+    const r = studio.renders[key];
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Open code", icon: "file", action: () => select(file, s.name, s.line) },
+        { label: "Play", icon: "play", disabled: !r, action: () => studio.showSource(key) },
+        { label: r ? "Render again" : "Render", icon: "render", disabled: !!studio.job, action: () => render(file, s.name) },
+        { label: "Render at 1080p", icon: "bolt", disabled: !!studio.job, action: () => studio.render(file, s.name, "high", true) },
+        { label: "Add to timeline", icon: "plus", action: () => studio.addToTimeline(file, s.name) },
+        "separator",
+        { label: "Rename", icon: "pencil", disabled: studio.locked, action: () => (renaming = { file, scene: s.name, value: s.name }) },
+        { label: "Duplicate", icon: "copy", action: () => attempt(() => studio.duplicateScene(file, s.name)) },
+        { label: "Copy name", icon: "copy", action: () => navigator.clipboard.writeText(s.name) },
+        { label: "Show video in folder", icon: "reveal", disabled: !r, action: () => r && revealItemInDir(r.video) },
+        "separator",
+        { label: "Delete scene", icon: "trash", danger: true, disabled: studio.locked, hint: studio.locked ? "Not while the assistant is working" : undefined, action: () => removeScene(file, s.name) },
+      ],
+    };
+  }
+
+  async function removeScene(file: string, scene: string) {
+    const clips = studio.clips.filter((c) => c.file === file && c.scene === scene).length;
+    const msg = `Delete the ${scene} class from ${basename(file)}?` + (clips ? ` Its ${clips === 1 ? "clip" : `${clips} clips`} on the timeline will be removed too.` : "");
+    if (!(await ask(msg, { title: "Delete scene", kind: "warning" }))) return;
+    await attempt(() => studio.deleteScene(file, scene));
+  }
+
+  async function commitRename() {
+    const r = renaming;
+    renaming = null;
+    if (r && r.value.trim() && r.value.trim() !== r.scene) await attempt(() => studio.renameScene(r.file, r.scene, r.value.trim()));
+  }
+
+  function focusSelect(el: HTMLInputElement) {
+    el.focus();
+    el.select();
+  }
 
   let { view }: { view: "grid" | "list" } = $props();
 
@@ -40,6 +99,9 @@
   }
 </script>
 
+{#if menu}<ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
+
 {#if !groups.length}
   <p class="tip">No scenes yet. In the editor, type <code>scene</code> and press Tab, or ask the assistant.</p>
 {/if}
@@ -58,6 +120,7 @@
         draggable="true"
         role="listitem"
         ondragstart={(e) => dragScene(e, g.file, s.name)}
+        oncontextmenu={(e) => sceneMenu(e, g.file, s)}
       >
         <button class="thumb" aria-label="Open {s.name}" onclick={() => select(g.file, s.name, s.line)}>
           {#if r?.thumb}
@@ -68,10 +131,24 @@
           {#if r && view === "grid"}<span class="dur">{shortTime(r.duration)}</span>{/if}
           {#if busy}<span class="busy"><span class="spinner"></span></span>{/if}
         </button>
+        {#if renaming?.file === g.file && renaming.scene === s.name}
+          <input
+            class="rename"
+            aria-label="New scene name"
+            bind:value={renaming.value}
+            use:focusSelect
+            onkeydown={(e) => {
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") renaming = null;
+            }}
+            onblur={commitRename}
+          />
+        {:else}
         <button class="label" onclick={() => select(g.file, s.name, s.line)}>
           <span class="scene-name">{s.name}</span>
           <span class="sub">{r ? `${shortTime(r.duration)} · ${r.height}p` : "Not rendered"}{view === "list" ? ` · line ${s.line}` : ""}</span>
         </button>
+        {/if}
         <div class="actions">
           {#if r}<button class="pill" title="Play" aria-label="Play {s.name}" onclick={() => studio.showSource(key)}><Icon name="play" size={11} /></button>{/if}
           <button class="pill" title="Render" aria-label="Render {s.name}" disabled={!!studio.job} onclick={() => render(g.file, s.name)}><Icon name="render" size={12} /></button>
@@ -83,6 +160,20 @@
 {/each}
 
 <style>
+  .rename {
+    min-width: 0;
+    height: 26px;
+    margin: 2px 4px;
+    padding: 0 8px;
+    border-radius: 8px;
+    font-size: 12px;
+    user-select: text;
+  }
+  .error {
+    margin: 6px 8px;
+    color: #f3c7c3;
+    font-size: 12px;
+  }
   .group {
     display: flex;
     align-items: center;

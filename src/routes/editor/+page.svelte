@@ -18,6 +18,7 @@
   import Timeline from "#lib/components/Timeline.svelte";
   import StatusBar from "#lib/components/StatusBar.svelte";
   import ExportDialog from "#lib/components/ExportDialog.svelte";
+  import CaptionsDialog from "#lib/components/CaptionsDialog.svelte";
 
   let viewer: Viewer;
   let exporting = $state(false);
@@ -71,6 +72,10 @@
       return;
     }
     studio.init().catch((e) => (bootError = String(e)));
+    if (ui.exportOnOpen) {
+      ui.exportOnOpen = false;
+      if (studio.clips.length) exporting = true;
+    }
     assistant.init();
     if (studio.dir) assistant.loadChats(studio.dir);
     voice.loadMeta();
@@ -135,10 +140,20 @@
     }
     if (e.ctrlKey && e.key.toLowerCase() === "e") {
       e.preventDefault();
-      if (studio.clips.length) exporting = true;
+      if (studio.clips.length || studio.currentScene) exporting = true;
       return;
     }
     if (inTextField(e) || exporting) return;
+    if (e.ctrlKey && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
+      e.preventDefault();
+      studio.redo();
+      return;
+    }
+    if (e.ctrlKey && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      studio.undo();
+      return;
+    }
     if (e.key === " ") {
       e.preventDefault();
       viewer?.togglePlay();
@@ -190,6 +205,10 @@
       ui.voiceEdit = null;
     }}
   />
+{/if}
+
+{#if ui.captionsOpen}
+  <CaptionsDialog focus={ui.captionFocus} onClose={() => (ui.captionsOpen = false)} />
 {/if}
 
 {#if ui.latexOpen}

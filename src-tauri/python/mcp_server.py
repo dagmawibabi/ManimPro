@@ -23,6 +23,42 @@ TOKEN = os.environ.get("MANIMPRO_TOKEN", "")
 
 TOOLS = [
     {
+        "name": "view_scene",
+        "description": (
+            "Look at a scene: returns still frames from its rendered preview as images, so you can check layout, "
+            "overlaps, text that runs off the frame and colors. Renders the scene first if it has no render yet "
+            "(or when rerender is true, e.g. after editing it). Give exact times in seconds, or a count of evenly spaced frames."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Scene file name in the project, e.g. scenes.py"},
+                "scene": {"type": "string", "description": "Scene class name, e.g. Intro"},
+                "times": {"type": "array", "items": {"type": "number"}, "description": "Seconds into the scene, e.g. [1.5, 4]. Up to 8."},
+                "count": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Evenly spaced frames when times is not given (default 4)."},
+                "rerender": {"type": "boolean", "description": "Render again before looking (default false)."},
+            },
+            "required": ["file", "scene"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "view_timeline",
+        "description": (
+            "Look at the finished video: returns frames from the timeline (all scenes in play order) as images, "
+            "at the given times in seconds on the timeline, or evenly spaced. Use it to check transitions between scenes "
+            "and the overall look before you finish."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "times": {"type": "array", "items": {"type": "number"}, "description": "Seconds on the timeline. Up to 8."},
+                "count": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Evenly spaced frames when times is not given (default 6)."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "list_scenes",
         "description": "List the project's scene files and the Scene classes in each, with whether each is rendered and its duration. Also reports whether LaTeX is installed.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -182,6 +218,85 @@ def app_call(tool: str, args: dict) -> dict:
     return reply.get("result", {})
 
 
+MAX_FRAMES = 8
+FRAME_WIDTH = 960
+
+
+def grab_frames(video: str, times: list[float]) -> list[tuple[float, str]]:
+    """JPEG frames (base64) from a video at the given times, in time order."""
+    import base64
+    import io
+
+    import av
+
+    out: list[tuple[float, str]] = []
+    with av.open(video) as c:
+        s = c.streams.video[0]
+        duration = float(c.duration / 1_000_000) if c.duration else 0.0
+        for t in sorted(times):
+            t = max(0.0, min(t, max(0.0, duration - 0.02)))
+            c.seek(int(t / s.time_base), stream=s, backward=True)
+            frame = None
+            for f in c.decode(s):
+                frame = f
+                # Seeking lands on the keyframe before t; decode forward to it.
+                if f.time is not None and f.time >= t - 0.03:
+                    break
+            if frame is None:
+                continue
+            img = frame.to_image()
+            if img.width > FRAME_WIDTH:
+                img = img.resize((FRAME_WIDTH, round(img.height * FRAME_WIDTH / img.width)))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=82)
+            out.append((t, base64.b64encode(buf.getvalue()).decode("ascii")))
+    return out
+
+
+def spaced(duration: float, n: int) -> list[float]:
+    n = max(1, min(MAX_FRAMES, n))
+    return [duration * (i + 0.5) / n for i in range(n)]
+
+
+def view_frames(name: str, args: dict) -> list[dict]:
+    """Runs view_scene / view_timeline: the app says which videos to look at, we extract the frames."""
+    times = [float(t) for t in (args.get("times") or [])][:MAX_FRAMES]
+    if name == "view_scene":
+        info = app_call("view_scene", {k: args[k] for k in ("file", "scene", "rerender") if k in args})
+        if info.get("ok") is False:
+            return [{"type": "text", "text": json.dumps(info, indent=1)}]
+        picks = times or spaced(info["duration"], int(args.get("count") or 4))
+        shots = [(t, info["video"], t) for t in picks]
+        head = f"{args['scene']}: {info['duration']:.1f}s, {info.get('resolution', '')}"
+    else:
+        info = app_call("view_timeline", {})
+        if info.get("ok") is False:
+            return [{"type": "text", "text": json.dumps(info, indent=1)}]
+        picks = times or spaced(info["duration"], int(args.get("count") or 6))
+        shots = []
+        for t in picks:
+            seg = next((s for s in info["segments"] if s["start"] <= t < s["end"]), None)
+            if seg:
+                shots.append((t, seg["video"], seg["in"] + (t - seg["start"])))
+        head = f"Timeline: {info['duration']:.1f}s"
+    content: list[dict] = [{"type": "text", "text": head}]
+    by_video: dict[str, list[tuple[float, float]]] = {}
+    for label_t, video, local_t in shots:
+        by_video.setdefault(video, []).append((label_t, local_t))
+    frames: list[tuple[float, str]] = []
+    for video, pairs in by_video.items():
+        grabbed = grab_frames(video, [lt for _, lt in pairs])
+        # grab_frames sorts by local time; pair them back up in the same order.
+        for (label_t, _), (_, data) in zip(sorted(pairs, key=lambda p: p[1]), grabbed):
+            frames.append((label_t, data))
+    for label_t, data in sorted(frames):
+        content.append({"type": "text", "text": f"t = {label_t:.2f}s"})
+        content.append({"type": "image", "data": data, "mimeType": "image/jpeg"})
+    if len(content) == 1:
+        content.append({"type": "text", "text": "Nothing to show at those times (the timeline is empty there)."})
+    return content
+
+
 def respond(req_id, result=None, error=None) -> None:
     msg = {"jsonrpc": "2.0", "id": req_id}
     if error is not None:
@@ -214,6 +329,13 @@ def handle(msg: dict) -> None:
         name = params.get("name")
         if name not in {t["name"] for t in TOOLS}:
             respond(req_id, error={"code": -32602, "message": f"Unknown tool {name}"})
+            return
+        if name in ("view_scene", "view_timeline"):
+            try:
+                content = view_frames(name, params.get("arguments") or {})
+                respond(req_id, {"content": content, "isError": not any(c["type"] == "image" for c in content)})
+            except Exception as exc:  # noqa: BLE001 - report, don't crash the agent's connection
+                respond(req_id, {"content": [{"type": "text", "text": f"Could not get frames: {exc}"}], "isError": True})
             return
         try:
             result = app_call(name, params.get("arguments") or {})

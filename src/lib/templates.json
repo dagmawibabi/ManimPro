@@ -9,7 +9,8 @@
       "MyScene"
     ],
     "thumbnail": null,
-    "duration": null
+    "duration": null,
+    "preview": null
   },
   {
     "id": "calculus-area",
@@ -23,7 +24,8 @@
       "AreaGrows"
     ],
     "thumbnail": "/templates/calculus-area.jpg",
-    "duration": 33.5
+    "duration": 33.5,
+    "preview": "/templates/calculus-area.mp4"
   },
   {
     "id": "fourier-square-wave",
@@ -36,7 +38,8 @@
       "RotatingCircles"
     ],
     "thumbnail": "/templates/fourier-square-wave.jpg",
-    "duration": 34.5
+    "duration": 34.5,
+    "preview": "/templates/fourier-square-wave.mp4"
   },
   {
     "id": "linear-transform",
@@ -51,7 +54,23 @@
       "Determinant"
     ],
     "thumbnail": "/templates/linear-transform.jpg",
-    "duration": 27.5
+    "duration": 27.5,
+    "preview": "/templates/linear-transform.mp4"
+  },
+  {
+    "id": "equation-steps",
+    "title": "The quadratic formula, derived",
+    "description": "Complete the square step by step, then check the formula on a parabola's roots. 3 scenes (MathTex).",
+    "category": "Math",
+    "latex": true,
+    "scenes": [
+      "Problem",
+      "CompleteSquare",
+      "Example"
+    ],
+    "thumbnail": "/templates/equation-steps.jpg",
+    "duration": 33.9,
+    "preview": "/templates/equation-steps.mp4"
   },
   {
     "id": "euler-formula",
@@ -64,7 +83,8 @@
       "AroundTheCircle"
     ],
     "thumbnail": "/templates/euler-formula.jpg",
-    "duration": 22.0
+    "duration": 22.0,
+    "preview": "/templates/euler-formula.mp4"
   },
   {
     "id": "taylor-series",
@@ -77,7 +97,8 @@
       "Approximations"
     ],
     "thumbnail": "/templates/taylor-series.jpg",
-    "duration": 24.5
+    "duration": 24.5,
+    "preview": "/templates/taylor-series.mp4"
   },
   {
     "id": "pythagoras",
@@ -90,7 +111,22 @@
       "Rearrange"
     ],
     "thumbnail": "/templates/pythagoras.jpg",
-    "duration": 23.6
+    "duration": 23.6,
+    "preview": "/templates/pythagoras.mp4"
+  },
+  {
+    "id": "surface-3d",
+    "title": "Functions of two variables",
+    "description": "A surface rises from the plane with an orbiting camera, then a moving slice turns it into a 1D graph. 2 scenes, 3D.",
+    "category": "3D",
+    "latex": false,
+    "scenes": [
+      "Surface3D",
+      "Slices"
+    ],
+    "thumbnail": "/templates/surface-3d.jpg",
+    "duration": 26.0,
+    "preview": "/templates/surface-3d.mp4"
   },
   {
     "id": "bayes-theorem",
@@ -105,7 +141,8 @@
       "Answer"
     ],
     "thumbnail": "/templates/bayes-theorem.jpg",
-    "duration": 32.1
+    "duration": 32.1,
+    "preview": "/templates/bayes-theorem.mp4"
   },
   {
     "id": "central-limit",
@@ -118,7 +155,80 @@
       "AddingDice"
     ],
     "thumbnail": "/templates/central-limit.jpg",
-    "duration": 24.7
+    "duration": 24.7,
+    "preview": "/templates/central-limit.mp4"
+  },
+  {
+    "id": "monte-carlo-pi",
+    "title": "Estimating \u03c0 with random darts",
+    "description": "Why the share of darts inside a quarter circle is \u03c0/4, then 1,200 throws with a live estimate. 2 scenes.",
+    "category": "Probability",
+    "latex": false,
+    "scenes": [
+      "Idea",
+      "Throwing"
+    ],
+    "thumbnail": "/templates/monte-carlo-pi.jpg",
+    "duration": 25.2,
+    "preview": "/templates/monte-carlo-pi.mp4"
+  },
+  {
+    "id": "neural-network",
+    "title": "How a neural network makes a guess",
+    "description": "Layers and weights, the maths inside one neuron, then a forward pass that picks a label. 3 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Structure",
+      "OneNeuron",
+      "ForwardPass"
+    ],
+    "thumbnail": "/templates/neural-network.jpg",
+    "duration": 36.5,
+    "preview": "/templates/neural-network.mp4"
+  },
+  {
+    "id": "gradient-descent",
+    "title": "Gradient descent",
+    "description": "A ball steps downhill along the slope, then three learning rates race: too small, too big, about right. 2 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Downhill",
+      "LearningRate"
+    ],
+    "thumbnail": "/templates/gradient-descent.jpg",
+    "duration": 36.5,
+    "preview": "/templates/gradient-descent.mp4"
+  },
+  {
+    "id": "sorting",
+    "title": "Bubble sort vs merge sort",
+    "description": "Neighbour swaps against split-and-merge on the same list, with comparisons counted. 3 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Title",
+      "BubbleSort",
+      "MergeSort"
+    ],
+    "thumbnail": "/templates/sorting.jpg",
+    "duration": 36.3,
+    "preview": "/templates/sorting.mp4"
+  },
+  {
+    "id": "graph-search",
+    "title": "Breadth-first vs depth-first search",
+    "description": "The same graph searched with a queue, then a stack, with the visit order written out. 2 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "BreadthFirst",
+      "DepthFirst"
+    ],
+    "thumbnail": "/templates/graph-search.jpg",
+    "duration": 37.3,
+    "preview": "/templates/graph-search.mp4"
   },
   {
     "id": "binary-search",
@@ -131,116 +241,7 @@
       "Search"
     ],
     "thumbnail": "/templates/binary-search.jpg",
-    "duration": 25.2
-  },
-  {
-    "id": "neural-network",
-    "title": "Neural network",
-    "description": "Signals pulse forward through a small network.",
-    "category": "Computer science",
-    "latex": false,
-    "scenes": [
-      "NeuralNetwork"
-    ],
-    "thumbnail": "/templates/neural-network.jpg",
-    "duration": 10.7
-  },
-  {
-    "id": "graph-search",
-    "title": "Breadth-first search",
-    "description": "A search spreads through a graph, layer by layer.",
-    "category": "Computer science",
-    "latex": false,
-    "scenes": [
-      "BreadthFirst"
-    ],
-    "thumbnail": "/templates/graph-search.jpg",
-    "duration": 7.2
-  },
-  {
-    "id": "sorting",
-    "title": "Bubble sort",
-    "description": "Bars compare and swap until the list is sorted.",
-    "category": "Computer science",
-    "latex": false,
-    "scenes": [
-      "BubbleSort"
-    ],
-    "thumbnail": "/templates/sorting.jpg",
-    "duration": 18.7
-  },
-  {
-    "id": "code-walkthrough",
-    "title": "Code walkthrough",
-    "description": "A code snippet highlighted line by line with notes.",
-    "category": "Computer science",
-    "latex": false,
-    "scenes": [
-      "CodeWalkthrough"
-    ],
-    "thumbnail": "/templates/code-walkthrough.jpg",
-    "duration": 7.8
-  },
-  {
-    "id": "explainer",
-    "title": "Three-part explainer",
-    "description": "Hook, key idea and outro: a ready-made story you can re-word.",
-    "category": "Storytelling",
-    "latex": false,
-    "scenes": [
-      "Hook",
-      "KeyIdea",
-      "Outro"
-    ],
-    "thumbnail": "/templates/explainer.jpg",
-    "duration": 13.5
-  },
-  {
-    "id": "logo-reveal",
-    "title": "Logo reveal",
-    "description": "Tiles fly in, lock into a mark and the brand name writes on.",
-    "category": "Motion design",
-    "latex": false,
-    "scenes": [
-      "LogoReveal"
-    ],
-    "thumbnail": "/templates/logo-reveal.jpg",
-    "duration": 7.0
-  },
-  {
-    "id": "surface-3d",
-    "title": "3D ripple surface",
-    "description": "A rippling surface with a slowly orbiting camera.",
-    "category": "3D",
-    "latex": false,
-    "scenes": [
-      "Ripple3D"
-    ],
-    "thumbnail": "/templates/surface-3d.jpg",
-    "duration": 8.5
-  },
-  {
-    "id": "pendulum",
-    "title": "Damped pendulum",
-    "description": "A simulated pendulum swings down and leaves a fading trail.",
-    "category": "Physics",
-    "latex": false,
-    "scenes": [
-      "Pendulum"
-    ],
-    "thumbnail": "/templates/pendulum.jpg",
-    "duration": 8.0
-  },
-  {
-    "id": "equation-steps",
-    "title": "Solve an equation",
-    "description": "Step-by-step algebra where matching terms glide into place (MathTex).",
-    "category": "Math",
-    "latex": true,
-    "scenes": [
-      "SolveEquation"
-    ],
-    "thumbnail": "/templates/equation-steps.jpg",
-    "duration": 9.9
+    "duration": 25.2,
+    "preview": "/templates/binary-search.mp4"
   }
 ]

@@ -5,6 +5,8 @@ import { studio } from "./studio.svelte";
 import { assistant } from "./assistant.svelte";
 import { voice } from "./voice.svelte";
 import { ui } from "./ui.svelte";
+import { settings } from "./settings.svelte";
+import { joinPath } from "./api";
 
 export type EnterOptions = { render?: boolean; prompt?: string; files?: PendingAttachment[] };
 
@@ -24,9 +26,17 @@ export async function enterProject(dir: string, opts: EnterOptions = {}) {
   }
 }
 
+/** Creates a project folder with the default frame shape from Settings. */
+export async function newProject(name: string, template = "blank") {
+  const dir = await api.createProject(name, template);
+  const aspect = settings.value.defaultAspect;
+  if (aspect !== "16:9") await api.writeText(joinPath(dir, "project.json"), JSON.stringify({ version: 2, aspect }, null, 2));
+  return dir;
+}
+
 /** Creates a project (blank or from a template) and opens it. */
 export async function createAndEnter(name: string, template = "blank", opts: EnterOptions = {}) {
-  const dir = await api.createProject(name, template);
+  const dir = await newProject(name, template);
   await enterProject(dir, { render: template !== "blank", ...opts });
   return dir;
 }

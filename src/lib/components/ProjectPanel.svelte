@@ -5,6 +5,7 @@
   import { settings } from "#lib/settings.svelte.ts";
   import { ui } from "#lib/ui.svelte.ts";
   import Icon from "./Icon.svelte";
+  import MusicLibrary from "./MusicLibrary.svelte";
   import FileTree from "./FileTree.svelte";
   import SceneBin from "./SceneBin.svelte";
   import AudioBin from "./AudioBin.svelte";
@@ -63,6 +64,7 @@
       if (!studio.audioFiles.includes(path)) studio.audioFiles = [...studio.audioFiles, path].sort();
     }
   }
+  let musicOpen = $state(false);
 </script>
 
 <aside class="panel">
@@ -88,6 +90,7 @@
         <div class="tools">
           <button class="icon-btn" title="New scene file" aria-label="New scene file" onclick={() => newItem("file")}><Icon name="filePlus" size={14} /></button>
           <button class="icon-btn" title="New folder" aria-label="New folder" onclick={() => newItem("folder")}><Icon name="folderPlus" size={14} /></button>
+          <button class="icon-btn" title="Add files (data, images…)" aria-label="Add files" onclick={() => tree?.addFiles()}><Icon name="paperclip" size={14} /></button>
         </div>
       </div>
       {#if filesOpen}<FileTree bind:this={tree} />{/if}
@@ -121,6 +124,7 @@
       {:else}
         <div class="actions">
           <button class="action primary" onclick={() => (ui.voiceOpen = true)}><Icon name="mic" size={13} /> Generate</button>
+          <button class="action" onclick={() => (musicOpen = true)}><Icon name="music" size={13} /> Music</button>
           <button class="action" onclick={importAudio}><Icon name="export" size={13} /> Import</button>
         </div>
         <AudioBin view={settings.value.audioView} />
@@ -128,6 +132,8 @@
     </section>
   </div>
 </aside>
+
+{#if musicOpen}<MusicLibrary onClose={() => (musicOpen = false)} />{/if}
 
 <style>
   .panel {

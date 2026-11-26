@@ -18,6 +18,53 @@
   const programClip = $derived(isProgram ? studio.clipAt(studio.playhead) : undefined);
   const showBlack = $derived(isProgram && !programClip);
 
+  // ---- Transitions in the program monitor (export does the same with FFmpeg).
+  let ghost: HTMLVideoElement;
+  const fx = $derived.by(() => {
+    const none = { black: 0, ghost: null as null | { src: string; at: number }, ghostOpacity: 0 };
+    if (!isProgram) return none;
+    const t = studio.playhead;
+    const sorted = [...studio.clips].sort((a, b) => a.start - b.start);
+    let black = 0;
+    let g: typeof none.ghost = null;
+    let gop = 0;
+    for (let i = 1; i < sorted.length; i++) {
+      const c = sorted[i];
+      const prev = sorted[i - 1];
+      const tr = c.transition;
+      if (!tr) continue;
+      const prevEnd = prev.start + (prev.out - prev.in);
+      if (tr.kind === "fade") {
+        const h = tr.duration / 2;
+        if (t >= c.start && t < c.start + h) black = Math.max(black, 1 - (t - c.start) / h);
+        if (t >= prevEnd - h && t < prevEnd) black = Math.max(black, 1 - (prevEnd - t) / h);
+      } else if (Math.abs(prevEnd - c.start) < 0.05 && t >= c.start && t < c.start + tr.duration) {
+        // Crossfade: the previous clip's last frame dissolves away over the new one.
+        const r = studio.renders[sceneKey(prev.file, prev.scene)];
+        if (r) {
+          g = { src: mediaUrl(r.video, r.version), at: Math.max(0, prev.out - 0.04) };
+          gop = 1 - (t - c.start) / tr.duration;
+        }
+      }
+    }
+    return { black, ghost: g, ghostOpacity: gop };
+  });
+  let ghostKey = "";
+  $effect(() => {
+    const g = fx.ghost;
+    if (!ghost || !g) return;
+    const key = `${g.src}@${g.at}`;
+    if (key === ghostKey) return;
+    ghostKey = key;
+    if (ghost.getAttribute("src") !== g.src) ghost.src = g.src;
+    const seek = () => (ghost.currentTime = g.at);
+    if (ghost.readyState >= 1) seek();
+    else ghost.addEventListener("loadedmetadata", seek, { once: true });
+  });
+
+  // ---- Captions show over the program monitor.
+  const caption = $derived(isProgram ? studio.captionAt(studio.playhead) : undefined);
+
   function setSrc(src: string) {
     if (currentSrc === src) return;
     currentSrc = src;
@@ -130,6 +177,7 @@
   });
 
   export function togglePlay() {
+    studio.stillImage = null;
     if (isProgram) {
       if (!studio.timelineDuration) return;
       studio.playing = !studio.playing;
@@ -209,6 +257,16 @@
         onpause={() => { if (!isProgram) sourcePlaying = false; }}
         onerror={() => { if (!isProgram && studio.sourceKey) studio.error = { message: "This preview file is missing. Render the scene again." }; }}
       ></video>
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video bind:this={ghost} class="ghost" class:off={!fx.ghost} style:opacity={fx.ghostOpacity} muted playsinline preload="auto"></video>
+      {#if fx.black > 0}<div class="dip" style:opacity={fx.black}></div>{/if}
+      {#if caption}<div class="caption"><span>{caption.text}</span></div>{/if}
+      {#if studio.stillImage}
+        <div class="still">
+          <img src={mediaUrl(studio.stillImage, studio.stillVersion)} alt="" />
+          <button class="still-close" title="Close" aria-label="Close picture" onclick={() => (studio.stillImage = null)}><Icon name="close" size={13} /></button>
+        </div>
+      {/if}
 
       {#if !isProgram && !source && !job}
         <div class="empty">
@@ -294,6 +352,71 @@
 </section>
 
 <style>
+  .ghost {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .ghost.off {
+    display: none;
+  }
+  .dip {
+    position: absolute;
+    inset: 0;
+    background: #000;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .caption {
+    position: absolute;
+    left: 6%;
+    right: 6%;
+    bottom: 5.5%;
+    z-index: 3;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .caption span {
+    padding: 0.25em 0.6em;
+    border-radius: 0.3em;
+    background: rgb(0 0 0 / 0.62);
+    color: #fff;
+    font-family: Arial, sans-serif;
+    font-size: clamp(11px, 4.4cqh, 34px);
+    line-height: 1.3;
+    text-align: center;
+    white-space: pre-line;
+  }
+  .still {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    background: #050506;
+  }
+  .still img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+  .still-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
+    background: rgb(0 0 0 / 0.6);
+    color: var(--text);
+  }
   .viewer.fs {
     position: fixed;
     inset: 0;

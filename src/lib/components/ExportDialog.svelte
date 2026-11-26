@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { save } from "@tauri-apps/plugin-dialog";
+  import { save, open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
-  import { studio, EXPORT_PRESETS, ASPECTS, type Aspect } from "#lib/studio.svelte.ts";
+  import { studio, EXPORT_PRESETS, EXPORT_FORMATS, ASPECTS, sceneKey, type Aspect, type ExportFormat } from "#lib/studio.svelte.ts";
   import { basename, joinPath } from "#lib/api.ts";
   import { timecode } from "#lib/time.ts";
   import Icon from "./Icon.svelte";
@@ -13,7 +13,28 @@
   const size = $derived(studio.frameSize(EXPORT_PRESETS.find((p) => p.id === presetId)!.height, aspect));
   let presetId = $state(settings.value.exportPreset as (typeof EXPORT_PRESETS)[number]["id"]);
   const exportDir = settings.value.exportFolder || studio.dir;
-  let output = $state(exportDir && studio.dir ? joinPath(exportDir, `${basename(studio.dir)}.mp4`) : "");
+  if (!studio.clips.length && studio.currentScene && studio.activeFile) {
+    // Nothing on the timeline: default to exporting the open scene.
+    queueMicrotask(() => (what = sceneKey(studio.activeFile!, studio.currentScene!.name)));
+  }
+  let format = $state<ExportFormat>("mp4");
+  /** "" = the whole timeline, else one scene's key. */
+  let what = $state<string>("");
+  let captionMode = $state<"off" | "srt" | "burn">(studio.captions.length ? "srt" : "off");
+  const scenes = $derived(
+    studio.files.flatMap((f) => (studio.scenes[f] ?? []).map((s) => ({ key: sceneKey(f, s.name), name: s.name, file: basename(f) }))),
+  );
+  const fmt = $derived(EXPORT_FORMATS.find((f) => f.id === format)!);
+  const baseName = $derived(what ? what.split("::")[1] : studio.dir ? basename(studio.dir) : "video");
+  let output = $state("");
+  let outputTouched = false;
+  // The file name follows the format and what is exported until the user picks one.
+  $effect(() => {
+    const ext = fmt.ext;
+    const name = ext ? `${baseName}.${ext}` : `${baseName} frames`;
+    if (!outputTouched && exportDir) output = joinPath(exportDir, name);
+    else if (output && ext) output = output.replace(/\.[^.\\/]+$/, "") + `.${ext}`;
+  });
   let stage = $state<string | null>(null);
   let done = $state<string | null>(null);
   let failure = $state<string | null>(null);
@@ -28,12 +49,23 @@
   });
 
   async function chooseFile() {
+    if (format === "png") {
+      const dir = await pickFolder({ directory: true, title: "Folder for the frames" });
+      if (typeof dir === "string") {
+        output = joinPath(dir, `${baseName} frames`);
+        outputTouched = true;
+      }
+      return;
+    }
     const path = await save({
       title: "Export video",
       defaultPath: output,
-      filters: [{ name: "MP4 video", extensions: ["mp4"] }],
+      filters: [{ name: fmt.label, extensions: [fmt.ext] }],
     });
-    if (path) output = path.endsWith(".mp4") ? path : `${path}.mp4`;
+    if (path) {
+      output = path.toLowerCase().endsWith(`.${fmt.ext}`) ? path : `${path}.${fmt.ext}`;
+      outputTouched = true;
+    }
   }
 
   async function start() {
@@ -41,8 +73,15 @@
     done = null;
     stage = "Preparing";
     try {
-      const r = await studio.exportVideo(preset, output, (s) => (stage = s), aspect);
+      const r = await studio.exportVideo(preset, output, (s) => (stage = s), {
+        aspect,
+        format,
+        only: what || null,
+        burnCaptions: captionMode === "burn",
+        srt: captionMode !== "off",
+      });
       done = r.output;
+      if (settings.value.revealAfterExport) revealItemInDir(r.output);
     } catch (e) {
       failure = (e as { message?: string }).message ?? String(e);
     }
@@ -66,7 +105,7 @@
       <span class="ok-mark"><Icon name="check" size={18} /></span>
       <div>
         <strong>Exported {basename(done)}</strong>
-        <p>{timecode(studio.timelineDuration)} · {preset.label} · {aspect} ({size.width}×{size.height})</p>
+        <p>{fmt.label} · {preset.label} · {aspect} ({size.width}×{size.height}){what ? "" : ` · ${timecode(studio.timelineDuration)}`}</p>
       </div>
     </div>
     <footer>
@@ -75,6 +114,20 @@
     </footer>
   {:else}
     <div class="fields">
+      <label>
+        <span>Export</span>
+        <select bind:value={what} disabled={running}>
+          <option value="" disabled={!studio.clips.length}>The whole timeline{studio.clips.length ? "" : " (empty)"}</option>
+          {#each scenes as s (s.key)}<option value={s.key}>Just {s.name} ({s.file})</option>{/each}
+        </select>
+      </label>
+      <label>
+        <span>Format</span>
+        <select bind:value={format} disabled={running}>
+          {#each EXPORT_FORMATS as f (f.id)}<option value={f.id}>{f.label}</option>{/each}
+        </select>
+      </label>
+      <p class="note dims">{fmt.note}</p>
       <label>
         <span>Resolution</span>
         <select bind:value={presetId} disabled={running}>
@@ -88,8 +141,18 @@
         </select>
       </label>
       <p class="note dims">{size.width} × {size.height} px{aspect !== studio.aspect ? ". Scenes are laid out for " + studio.aspect + ", so check that nothing is cut off." : ""}</p>
+      {#if !what && studio.captions.length && format !== "png"}
+        <label>
+          <span>Captions</span>
+          <select bind:value={captionMode} disabled={running}>
+            <option value="off">Off</option>
+            <option value="srt">Subtitle file (.srt) next to the video</option>
+            <option value="burn">Burned into the picture, plus .srt</option>
+          </select>
+        </label>
+      {/if}
       <label>
-        <span>Save as</span>
+        <span>{format === "png" ? "Save frames in" : "Save as"}</span>
         <div class="file">
           <input value={output} readonly title={output} />
           <button class="btn" disabled={running} onclick={chooseFile}>Change</button>

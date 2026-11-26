@@ -10,6 +10,8 @@ export type ProjectInfo = {
   files: string[];
   folders: string[];
   audio: string[];
+  /** Every other file in the project: data, images, notes. */
+  others: string[];
   timeline: unknown | null;
 };
 
@@ -39,7 +41,17 @@ export type ProjectSummary = {
   scenes: number;
   clips: number;
   thumbnail: string | null;
+  preview: string | null;
 };
+
+export type MusicTrack = { id: string; title: string; mood: string; bpm: number; duration: number; file: string; path: string };
+
+export type FileChange = { path: string; status: "added" | "modified" | "deleted" };
+
+export type PythonPackage = { name: string; version: string; summary: string };
+export type PackagesResult = { ok: boolean; error?: string; log?: string; packages?: PythonPackage[]; dir?: string };
+
+export type RootInfo = { path: string; default: string; local: string; onedrive: boolean };
 
 export type Provider = "claude" | "codex" | "opencode" | "openrouter" | "vercel";
 
@@ -120,6 +132,21 @@ export const api = {
     invoke<string>("create_project", { name, template: template ?? null }),
   importMedia: (projectDir: string, source: string) => invoke<string>("import_media", { projectDir, source }),
   renameProject: (dir: string, name: string) => invoke<string>("rename_project", { dir, name }),
+  deleteProject: (dir: string) => invoke<void>("delete_project", { dir }),
+  launchPath: () => invoke<string | null>("launch_path"),
+  importFiles: (project: string, folder: string, sources: string[]) => invoke<string[]>("import_files", { project, folder, sources }),
+  importFileData: (project: string, folder: string, name: string, data: string) =>
+    invoke<string>("import_file_data", { project, folder, name, data }),
+  checkpointCreate: (project: string) => invoke<string>("checkpoint_create", { project }),
+  checkpointChanges: (project: string, id: string) => invoke<FileChange[]>("checkpoint_changes", { project, id }),
+  checkpointRestore: (project: string, id: string) => invoke<FileChange[]>("checkpoint_restore", { project, id }),
+  musicLibrary: () => invoke<{ license: string; tracks: MusicTrack[] }>("music_library"),
+  packagesList: () => invoke<PackagesResult>("packages_list"),
+  packagesInstall: (spec: string) => invoke<PackagesResult>("packages_install", { spec }),
+  packagesRemove: (name: string) => invoke<PackagesResult>("packages_remove", { name }),
+  getProjectsRoot: () => invoke<RootInfo>("get_projects_root"),
+  setProjectsRoot: (path: string | null) => invoke<RootInfo>("set_projects_root", { path }),
+  forgetRecent: (dir: string) => invoke<void>("forget_recent", { dir }),
 
   // Assistants
   agentStatus: (provider: Provider) => invoke<AgentStatus>("agent_status", { provider }),
