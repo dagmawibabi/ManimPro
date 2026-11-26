@@ -1,0 +1,247 @@
+[
+  {
+    "id": "blank",
+    "title": "Blank project",
+    "description": "An empty scene to start from.",
+    "category": "Basics",
+    "latex": false,
+    "scenes": [
+      "MyScene"
+    ],
+    "thumbnail": null,
+    "duration": null,
+    "preview": null
+  },
+  {
+    "id": "calculus-area",
+    "title": "Area under a curve",
+    "description": "Rectangles shrink toward the exact area, then the area function reveals dA/dx = f(x). 3 scenes, inspired by Essence of Calculus.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Question",
+      "RiemannSums",
+      "AreaGrows"
+    ],
+    "thumbnail": "/templates/calculus-area.jpg",
+    "duration": 33.5,
+    "preview": "/templates/calculus-area.mp4"
+  },
+  {
+    "id": "fourier-square-wave",
+    "title": "Fourier series: a square wave from sines",
+    "description": "Add sine waves one by one, then watch spinning circles draw the wave. 2 scenes, inspired by \u201cBut what is a Fourier series?\u201d",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "AddingSines",
+      "RotatingCircles"
+    ],
+    "thumbnail": "/templates/fourier-square-wave.jpg",
+    "duration": 34.5,
+    "preview": "/templates/fourier-square-wave.mp4"
+  },
+  {
+    "id": "linear-transform",
+    "title": "Linear transformations",
+    "description": "Basis vectors, a shear, a rotation and the determinant as area. 4 scenes, inspired by Essence of Linear Algebra.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "BasisVectors",
+      "Shear",
+      "Rotation",
+      "Determinant"
+    ],
+    "thumbnail": "/templates/linear-transform.jpg",
+    "duration": 27.5,
+    "preview": "/templates/linear-transform.mp4"
+  },
+  {
+    "id": "equation-steps",
+    "title": "The quadratic formula, derived",
+    "description": "Complete the square step by step, then check the formula on a parabola's roots. 3 scenes (MathTex).",
+    "category": "Math",
+    "latex": true,
+    "scenes": [
+      "Problem",
+      "CompleteSquare",
+      "Example"
+    ],
+    "thumbnail": "/templates/equation-steps.jpg",
+    "duration": 33.9,
+    "preview": "/templates/equation-steps.mp4"
+  },
+  {
+    "id": "euler-formula",
+    "title": "Euler's formula: e^i\u03c0 = \u22121",
+    "description": "Multiplying by i as a quarter turn, then e^i\u03b8 walking the unit circle. 2 scenes.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Multiplying",
+      "AroundTheCircle"
+    ],
+    "thumbnail": "/templates/euler-formula.jpg",
+    "duration": 22.0,
+    "preview": "/templates/euler-formula.mp4"
+  },
+  {
+    "id": "taylor-series",
+    "title": "Taylor series of sin(x)",
+    "description": "Polynomials of growing degree hug the sine curve over a wider range. 2 scenes.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Idea",
+      "Approximations"
+    ],
+    "thumbnail": "/templates/taylor-series.jpg",
+    "duration": 24.5,
+    "preview": "/templates/taylor-series.mp4"
+  },
+  {
+    "id": "pythagoras",
+    "title": "Pythagorean theorem, by rearrangement",
+    "description": "The same four triangles in one square, arranged two ways. 2 scenes.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Setup",
+      "Rearrange"
+    ],
+    "thumbnail": "/templates/pythagoras.jpg",
+    "duration": 23.6,
+    "preview": "/templates/pythagoras.mp4"
+  },
+  {
+    "id": "surface-3d",
+    "title": "Functions of two variables",
+    "description": "A surface rises from the plane with an orbiting camera, then a moving slice turns it into a 1D graph. 2 scenes, 3D.",
+    "category": "3D",
+    "latex": false,
+    "scenes": [
+      "Surface3D",
+      "Slices"
+    ],
+    "thumbnail": "/templates/surface-3d.jpg",
+    "duration": 26.0,
+    "preview": "/templates/surface-3d.mp4"
+  },
+  {
+    "id": "bayes-theorem",
+    "title": "Bayes' theorem as areas",
+    "description": "Librarian or farmer? Prior odds and evidence drawn as areas. 4 scenes, inspired by 3Blue1Brown's Bayes video.",
+    "category": "Probability",
+    "latex": false,
+    "scenes": [
+      "TheQuestion",
+      "Population",
+      "Evidence",
+      "Answer"
+    ],
+    "thumbnail": "/templates/bayes-theorem.jpg",
+    "duration": 32.1,
+    "preview": "/templates/bayes-theorem.mp4"
+  },
+  {
+    "id": "central-limit",
+    "title": "Central limit theorem",
+    "description": "Averages of more and more dice pile up into a bell curve. 2 scenes.",
+    "category": "Probability",
+    "latex": false,
+    "scenes": [
+      "OneDie",
+      "AddingDice"
+    ],
+    "thumbnail": "/templates/central-limit.jpg",
+    "duration": 24.7,
+    "preview": "/templates/central-limit.mp4"
+  },
+  {
+    "id": "monte-carlo-pi",
+    "title": "Estimating \u03c0 with random darts",
+    "description": "Why the share of darts inside a quarter circle is \u03c0/4, then 1,200 throws with a live estimate. 2 scenes.",
+    "category": "Probability",
+    "latex": false,
+    "scenes": [
+      "Idea",
+      "Throwing"
+    ],
+    "thumbnail": "/templates/monte-carlo-pi.jpg",
+    "duration": 25.2,
+    "preview": "/templates/monte-carlo-pi.mp4"
+  },
+  {
+    "id": "neural-network",
+    "title": "How a neural network makes a guess",
+    "description": "Layers and weights, the maths inside one neuron, then a forward pass that picks a label. 3 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Structure",
+      "OneNeuron",
+      "ForwardPass"
+    ],
+    "thumbnail": "/templates/neural-network.jpg",
+    "duration": 36.5,
+    "preview": "/templates/neural-network.mp4"
+  },
+  {
+    "id": "gradient-descent",
+    "title": "Gradient descent",
+    "description": "A ball steps downhill along the slope, then three learning rates race: too small, too big, about right. 2 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Downhill",
+      "LearningRate"
+    ],
+    "thumbnail": "/templates/gradient-descent.jpg",
+    "duration": 36.5,
+    "preview": "/templates/gradient-descent.mp4"
+  },
+  {
+    "id": "sorting",
+    "title": "Bubble sort vs merge sort",
+    "description": "Neighbour swaps against split-and-merge on the same list, with comparisons counted. 3 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Title",
+      "BubbleSort",
+      "MergeSort"
+    ],
+    "thumbnail": "/templates/sorting.jpg",
+    "duration": 36.3,
+    "preview": "/templates/sorting.mp4"
+  },
+  {
+    "id": "graph-search",
+    "title": "Breadth-first vs depth-first search",
+    "description": "The same graph searched with a queue, then a stack, with the visit order written out. 2 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "BreadthFirst",
+      "DepthFirst"
+    ],
+    "thumbnail": "/templates/graph-search.jpg",
+    "duration": 37.3,
+    "preview": "/templates/graph-search.mp4"
+  },
+  {
+    "id": "binary-search",
+    "title": "Binary search",
+    "description": "L, M and R pointers halve the range until the target is found. Edit the list and target. 2 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Intro",
+      "Search"
+    ],
+    "thumbnail": "/templates/binary-search.jpg",
+    "duration": 25.2,
+    "preview": "/templates/binary-search.mp4"
+  }
+]

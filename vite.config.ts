@@ -6,6 +6,6 @@ export default defineConfig({
   // Tauri loads a static SPA from disk: no server, every route falls back to index.html.
   plugins: [sveltekit({ adapter: adapter({ fallback: "index.html" }) })],
   clearScreen: false,
-  server: { port: 1420, strictPort: true, watch: { ignored: ["**/src-tauri/**"] } },
+  server: { port: 1420, strictPort: true, watch: { ignored: ["**/src-tauri/**", "**/Site/**"] } },
   build: { chunkSizeWarningLimit: 6000 },
 });
