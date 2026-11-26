@@ -5,6 +5,33 @@
 
   let { text }: { text: string } = $props();
   const html = $derived(renderMarkdown(text));
+  let root: HTMLDivElement;
+
+  // Each code block gets its language and a Copy button (added after sanitizing, so they stay ours).
+  $effect(() => {
+    html;
+    if (!root) return;
+    for (const pre of root.querySelectorAll<HTMLPreElement>("pre")) {
+      if (pre.parentElement?.classList.contains("code-block")) continue;
+      const wrap = document.createElement("div");
+      wrap.className = "code-block";
+      const bar = document.createElement("div");
+      bar.className = "code-bar";
+      const label = document.createElement("span");
+      label.textContent = pre.dataset.lang || "code";
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.textContent = "Copy";
+      copy.onclick = async () => {
+        await navigator.clipboard.writeText(pre.querySelector("code")?.textContent ?? "");
+        copy.textContent = "Copied";
+        setTimeout(() => (copy.textContent = "Copy"), 1400);
+      };
+      bar.append(label, copy);
+      pre.replaceWith(wrap);
+      wrap.append(bar, pre);
+    }
+  });
 
   // Links open in the user's browser, never inside the app window.
   function onClick(e: MouseEvent) {
@@ -17,7 +44,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="md" onclick={onClick}>{@html html}</div>
+<div class="md" bind:this={root} onclick={onClick}>{@html html}</div>
 
 <style>
   .md {
@@ -91,6 +118,83 @@
     background: var(--bg);
     border: 1px solid var(--line);
     overflow: auto;
+  }
+  .md :global(.code-block) {
+    margin: 0 0 0.8em;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .md :global(.code-block pre) {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+  .md :global(.code-bar) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px 5px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--faint);
+  }
+  .md :global(.code-bar button) {
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .md :global(.code-bar button:hover) {
+    background: var(--raised);
+    color: var(--text);
+  }
+  /* Highlighting, matched to the code editor's colors. */
+  .md :global(.hljs-comment),
+  .md :global(.hljs-quote) {
+    color: #5f636d;
+    font-style: italic;
+  }
+  .md :global(.hljs-keyword),
+  .md :global(.hljs-built_in),
+  .md :global(.hljs-literal),
+  .md :global(.hljs-meta .hljs-keyword) {
+    color: #c792ea;
+  }
+  .md :global(.hljs-string),
+  .md :global(.hljs-regexp),
+  .md :global(.hljs-addition) {
+    color: #a5d6a7;
+  }
+  .md :global(.hljs-number),
+  .md :global(.hljs-symbol) {
+    color: #f8c37a;
+  }
+  .md :global(.hljs-title),
+  .md :global(.hljs-title.class_),
+  .md :global(.hljs-type),
+  .md :global(.hljs-section) {
+    color: var(--accent);
+  }
+  .md :global(.hljs-title.function_),
+  .md :global(.hljs-attr),
+  .md :global(.hljs-attribute),
+  .md :global(.hljs-property) {
+    color: #82aaff;
+  }
+  .md :global(.hljs-params),
+  .md :global(.hljs-variable) {
+    color: #e6e6e6;
+  }
+  .md :global(.hljs-meta),
+  .md :global(.hljs-tag),
+  .md :global(.hljs-name),
+  .md :global(.hljs-selector-tag) {
+    color: #89ddff;
+  }
+  .md :global(.hljs-deletion) {
+    color: #f3a39b;
   }
   .md :global(pre code) {
     padding: 0;

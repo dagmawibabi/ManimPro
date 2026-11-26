@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { studio, sceneKey } from "#lib/studio.svelte.ts";
+  import { studio, sceneKey, clipLen } from "#lib/studio.svelte.ts";
   import { mediaUrl } from "#lib/api.ts";
   import { timecode, clamp } from "#lib/time.ts";
   import Icon from "./Icon.svelte";
   import { untrack } from "svelte";
   import { ui } from "#lib/ui.svelte.ts";
   import { fullscreen } from "#lib/fullscreen.svelte.ts";
+  import { settings } from "#lib/settings.svelte.ts";
 
   let video: HTMLVideoElement;
   let currentSrc = "";
@@ -16,7 +17,8 @@
   const sourceName = $derived(studio.sourceKey?.split("::")[1] ?? "");
   const isProgram = $derived(studio.viewerMode === "program");
   const programClip = $derived(isProgram ? studio.clipAt(studio.playhead) : undefined);
-  const showBlack = $derived(isProgram && !programClip);
+  const showBlack = $derived(isProgram && (!programClip || programClip.media === "image"));
+  const programImage = $derived(isProgram && programClip?.media === "image" ? programClip.file : null);
 
   // ---- Transitions in the program monitor (export does the same with FFmpeg).
   let ghost: HTMLVideoElement;
@@ -33,16 +35,16 @@
       const prev = sorted[i - 1];
       const tr = c.transition;
       if (!tr) continue;
-      const prevEnd = prev.start + (prev.out - prev.in);
+      const prevEnd = prev.start + clipLen(prev);
       if (tr.kind === "fade") {
         const h = tr.duration / 2;
         if (t >= c.start && t < c.start + h) black = Math.max(black, 1 - (t - c.start) / h);
         if (t >= prevEnd - h && t < prevEnd) black = Math.max(black, 1 - (prevEnd - t) / h);
       } else if (Math.abs(prevEnd - c.start) < 0.05 && t >= c.start && t < c.start + tr.duration) {
         // Crossfade: the previous clip's last frame dissolves away over the new one.
-        const r = studio.renders[sceneKey(prev.file, prev.scene)];
+        const r = prev.media === "video" ? { video: prev.file, version: 0 } : prev.media ? null : studio.renders[sceneKey(prev.file, prev.scene)];
         if (r) {
-          g = { src: mediaUrl(r.video, r.version), at: Math.max(0, prev.out - 0.04) };
+          g = { src: mediaUrl(r.video, r.version || undefined), at: Math.max(0, prev.out - 0.04) };
           gop = 1 - (t - c.start) / tr.duration;
         }
       }
@@ -81,6 +83,7 @@
       return;
     }
     setSrc(mediaUrl(source.video, source.version));
+    video.playbackRate = 1;
     sourceTime = 0;
   });
 
@@ -129,14 +132,19 @@
   // ---- Program monitor: a wall clock drives the playhead; the video follows it.
   function syncProgram(t: number, playing: boolean) {
     const clip = studio.clipAt(t);
-    if (!clip) {
+    if (!clip || clip.media === "image") {
       if (!video.paused) video.pause();
       return;
     }
-    const r = studio.renders[sceneKey(clip.file, clip.scene)];
-    if (!r) return;
-    setSrc(mediaUrl(r.video, r.version));
-    const local = clip.in + (t - clip.start);
+    if (clip.media === "video") setSrc(mediaUrl(clip.file));
+    else {
+      const r = studio.renders[sceneKey(clip.file, clip.scene)];
+      if (!r) return;
+      setSrc(mediaUrl(r.video, r.version));
+    }
+    const sp = clip.speed ?? 1;
+    const local = clip.in + (t - clip.start) * sp;
+    if (video.playbackRate !== sp) video.playbackRate = sp;
     const drift = Math.abs(video.currentTime - local);
     if (drift > (playing ? 0.2 : 0.005)) video.currentTime = local;
     if (playing && video.paused) video.play().catch(() => {});
@@ -223,6 +231,18 @@
   const total = $derived(isProgram ? studio.timelineDuration : (source?.duration ?? 0));
   const playing = $derived(isProgram ? studio.playing : sourcePlaying);
   const job = $derived(studio.job);
+
+  let fetching = $state(false);
+  async function getShared() {
+    fetching = true;
+    try {
+      await studio.fetch3b1bShared();
+    } catch (e) {
+      studio.error = { message: `Couldn't download it: ${e}` };
+    } finally {
+      fetching = false;
+    }
+  }
 </script>
 
 <section class="viewer" class:fs={fullscreen.target === "viewer"}>
@@ -259,6 +279,7 @@
       ></video>
       <!-- svelte-ignore a11y_media_has_caption -->
       <video bind:this={ghost} class="ghost" class:off={!fx.ghost} style:opacity={fx.ghostOpacity} muted playsinline preload="auto"></video>
+      {#if programImage}<img class="photo" src={mediaUrl(programImage)} alt="" />{/if}
       {#if fx.black > 0}<div class="dip" style:opacity={fx.black}></div>{/if}
       {#if caption}<div class="caption"><span>{caption.text}</span></div>{/if}
       {#if studio.stillImage}
@@ -304,6 +325,12 @@
           <p>{studio.error.message}</p>
           {#if /latex|dvisvgm/i.test(studio.error.message) && !studio.worker.latex}
             <button class="link" onclick={() => (ui.latexOpen = true)}>Install LaTeX</button>
+          {/if}
+          {#if studio.error.action === "fetch_3b1b"}
+            <button class="link" disabled={fetching} onclick={getShared}>{fetching ? "Getting it…" : "Get 3Blue1Brown's shared code"}</button>
+          {/if}
+          {#if /ManimGL in Settings/.test(studio.error.message)}
+            <button class="link" onclick={() => settings.show("packages")}>Open Python packages</button>
           {/if}
           {#if studio.error.line && studio.error.file === studio.activeFile}
             <button class="link" onclick={() => studio.goToLine(studio.error!.line!)}>Go to line {studio.error.line}</button>
@@ -352,6 +379,15 @@
 </section>
 
 <style>
+  .photo {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    z-index: 1;
+    background: #000;
+  }
   .ghost {
     position: absolute;
     inset: 0;

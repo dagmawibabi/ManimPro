@@ -1,5 +1,6 @@
 import { api, basename, joinPath, type BridgeCall, type RenderResult, type SceneInfo, type WorkerError } from "./api";
 import { clamp } from "./time";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { settings } from "./settings.svelte";
 
 export type Quality = "fast" | "preview" | "draft" | "high" | "1440p" | "4k";
@@ -20,6 +21,8 @@ export type ExportOptions = {
   only?: string | null;
   burnCaptions?: boolean;
   srt?: boolean;
+  /** Keep the background transparent (MOV ProRes 4444 or WebM VP9). */
+  transparent?: boolean;
 };
 
 export type Render = RenderResult & { quality: Quality; version: number };
@@ -33,7 +36,16 @@ export type Clip = {
   out: number;
   /** How this clip comes in from the one before it. */
   transition?: Transition;
+  /** Playback speed: 2 plays twice as fast (half as long on the timeline). */
+  speed?: number;
+  /** Your own footage instead of a scene: `file` is the photo/video, `scene` its name. */
+  media?: "image" | "video";
+  /** Full length of a video file (photos can be stretched to any length). */
+  length?: number;
 };
+
+export const MEDIA_EXT = /\.(png|jpe?g|webp|bmp|gif|mp4|mov|webm|mkv|avi|m4v)$/i;
+export const IMAGE_EXT = /\.(png|jpe?g|webp|bmp)$/i;
 
 export type Transition = { kind: "fade" | "crossfade"; duration: number };
 
@@ -86,7 +98,9 @@ export const aspectOf = (id: Aspect) => ASPECTS.find((a) => a.id === id) ?? ASPE
 export const sceneKey = (file: string, scene: string) => `${file}::${scene}`;
 const MIN_CLIP = 0.1;
 const uid = () => Math.random().toString(36).slice(2, 10);
-const clipLen = (c: { in: number; out: number }) => c.out - c.in;
+/** Seconds a clip takes on the timeline (its source span, sped up or slowed down). */
+export const clipLen = (c: { in: number; out: number; speed?: number }) => (c.out - c.in) / (c.speed ?? 1);
+const speedOf = (c: Clip | AudioClip) => ("speed" in c && c.speed ? c.speed : 1);
 
 class Studio {
   // Project
@@ -118,6 +132,10 @@ class Studio {
   /** An image shown over the viewer (a picture from the project, or a quick-look frame). */
   stillImage = $state<string | null>(null);
   stillVersion = $state(0);
+  /** A one-line heads-up from the last render (e.g. narration was silent). */
+  notice = $state<string | null>(null);
+  /** Where "go to definition" landed outside the project (Manim's own source). */
+  definitionHint = $state<string | null>(null);
 
   // ------------------------------------------------------------ undo / redo
   // Snapshots of the timeline (clips, audio, captions), taken when an edit settles.
@@ -637,11 +655,11 @@ class Studio {
     await this.render(this.activeFile, name, this.previewQuality, true);
   }
 
-  render(file: string, scene: string, quality: Quality, show = false, aspect: Aspect = this.aspect): Promise<Render | null> {
+  render(file: string, scene: string, quality: Quality, show = false, aspect: Aspect = this.aspect, transparent = false): Promise<Render | null> {
     const run = async () => {
       const key = sceneKey(file, scene);
       const shape = aspectOf(aspect);
-      const own = aspect === this.aspect;
+      const own = aspect === this.aspect && !transparent;
       this.job = { kind: "render", label: scene };
       this.error = null;
       try {
@@ -649,15 +667,20 @@ class Studio {
           path: file,
           scene,
           quality,
-          mediaDir: own ? this.mediaDir : joinPath(this.mediaDir, `frame-${shape.w}x${shape.h}`),
+          mediaDir: own ? this.mediaDir : joinPath(this.mediaDir, `frame-${shape.w}x${shape.h}${transparent ? "-alpha" : ""}`),
+          transparent,
           thumb: own && this.dir ? joinPath(this.dir, ".manimpro\\thumb.jpg") : null,
           sceneThumb: own ? joinPath(this.mediaDir, `thumbs\\${basename(file).replace(/\.py$/i, "")}-${scene}.jpg`) : null,
           noCache: settings.value.disableCache,
           aspect: [shape.w, shape.h],
           fit: settings.value.frameFit === "fit",
+          project: this.dir,
+          voiceId: localStorage.getItem("mp.voice") || null,
+          voiceModel: localStorage.getItem("mp.voiceModel") || null,
           background: settings.value.backgroundColor !== "#000000" ? settings.value.backgroundColor : null,
         });
         const render: Render = { ...r, quality, version: Date.now() };
+        if (r.warning) this.notice = r.warning;
         // Another frame shape (an export) is a one-off: the previews stay as they are.
         if (!own) return render;
         this.renders[key] = render;
@@ -709,6 +732,28 @@ class Studio {
     return clip;
   }
 
+  /** Puts a photo or video file on the video track (at the end, or at `at` seconds). */
+  async addMedia(path: string, at?: number, seconds?: number) {
+    const info = await api.call<{ kind: "image" | "video"; duration: number | null; width: number; height: number }>("media_info", { path });
+    const len = info.kind === "image" ? (seconds ?? 4) : (info.duration ?? 4);
+    const clip: Clip = {
+      id: uid(),
+      file: path,
+      scene: basename(path),
+      start: at ?? this.videoDuration,
+      in: 0,
+      out: len,
+      media: info.kind,
+      ...(info.kind === "video" ? { length: info.duration ?? len } : {}),
+    };
+    this.clips.push(clip);
+    this.resolveOverlaps("video", clip.id);
+    this.selectedClip = clip.id;
+    this.viewerMode = "program";
+    this.persist();
+    return clip;
+  }
+
   /** Appends every scene of the project to the video track, file by file, in code order. */
   async addAllScenes() {
     let added = 0;
@@ -741,6 +786,7 @@ class Studio {
     this.selectedClip = clip.id;
     this.viewerMode = "program";
     this.persist();
+    return clip;
   }
 
   async loadWaveform(path: string) {
@@ -768,6 +814,8 @@ class Studio {
 
   sourceLength(clip: Clip | AudioClip): number {
     if ("path" in clip) return clip.duration;
+    if (clip.media === "image") return 3600;
+    if (clip.media === "video") return clip.length ?? clip.out;
     return this.renders[sceneKey(clip.file, clip.scene)]?.duration ?? clip.out;
   }
 
@@ -781,8 +829,8 @@ class Studio {
     if (!f) return;
     const c = f.clip;
     if (edge === "in") {
-      const next = clamp(value, Math.max(0, c.in - c.start), c.out - MIN_CLIP);
-      c.start += next - c.in;
+      const next = clamp(value, Math.max(0, c.in - c.start * speedOf(c)), c.out - MIN_CLIP);
+      c.start += (next - c.in) / speedOf(c);
       c.in = next;
     } else {
       c.out = clamp(value, c.in + MIN_CLIP, this.sourceLength(c));
@@ -816,7 +864,7 @@ class Studio {
           })();
     if (!target) return;
     const c = target.clip;
-    const cut = c.in + (t - c.start);
+    const cut = c.in + (t - c.start) * speedOf(c);
     const right = { ...c, id: uid(), start: t, in: cut };
     c.out = cut;
     const list = this.track(target.kind) as (Clip | AudioClip)[];
@@ -837,10 +885,10 @@ class Studio {
     if (!c || !this.playheadInside(id)) return;
     const t = this.playhead;
     if (edge === "start") {
-      c.in += t - c.start;
+      c.in += (t - c.start) * speedOf(c);
       c.start = t;
     } else {
-      c.out = c.in + (t - c.start);
+      c.out = c.in + (t - c.start) * speedOf(c);
     }
     this.persist();
   }
@@ -874,6 +922,17 @@ class Studio {
         return;
       }
     }
+  }
+
+  // ------------------------------------------------------------ speed
+  /** Sets a video clip's playback speed (0.25× to 4×); clips after it move to make room. */
+  setClipSpeed(id: string, speed: number) {
+    const c = this.clips.find((x) => x.id === id);
+    if (!c) return;
+    const s = clamp(Math.round(speed * 100) / 100, 0.25, 4);
+    if (s === 1) delete c.speed;
+    else c.speed = s;
+    this.resolveOverlaps("video", id);
   }
 
   // ------------------------------------------------------------ transitions
@@ -956,6 +1015,16 @@ class Studio {
     return p;
   }
 
+  /** Downloads 3Blue1Brown's shared code (manim_imports_ext.py + custom/) into the project, then re-renders. */
+  async fetch3b1bShared() {
+    if (!this.dir) return;
+    const r = await api.call<{ files: string[] }>("fetch_3b1b_shared", { dest: this.dir });
+    await this.refreshFromDisk();
+    this.error = null;
+    this.notice = `Added 3Blue1Brown's shared code (${r.files.length} files). It's CC BY-NC-SA: fine for learning and non-commercial videos.`;
+    if (this.currentScene) await this.renderCurrent();
+  }
+
   /** Takes every clip of one audio file off the timeline (the file stays). */
   removeAudioClips(path: string) {
     this.audio = this.audio.filter((a) => a.path !== path);
@@ -986,12 +1055,12 @@ class Studio {
   async exportVideo(preset: ExportPreset, output: string, onStage: (s: string) => void, opts: ExportOptions = {}) {
     const aspect = opts.aspect ?? this.aspect;
     const only = opts.only ?? null;
-    const keys = only ? [only] : [...new Set(this.clips.map((c) => sceneKey(c.file, c.scene)))];
+    const keys = only ? [only] : [...new Set(this.clips.filter((c) => !c.media).map((c) => sceneKey(c.file, c.scene)))];
     const finals: Record<string, Render> = {};
     for (const [i, key] of keys.entries()) {
       const [file, scene] = key.split("::");
       onStage(`Rendering ${scene} (${i + 1} of ${keys.length})`);
-      const r = await this.render(file, scene, preset.id, false, aspect);
+      const r = await this.render(file, scene, preset.id, false, aspect, !!opts.transparent);
       if (!r) throw new Error(this.error?.message ?? `Rendering ${scene} failed.`);
       finals[key] = r;
     }
@@ -1004,11 +1073,13 @@ class Studio {
           clips: single
             ? [{ path: single.video, start: 0, in: 0, out: single.duration }]
             : this.clips.map((c) => ({
-                path: finals[sceneKey(c.file, c.scene)].video,
+                path: c.media ? c.file : finals[sceneKey(c.file, c.scene)].video,
+                image: c.media === "image",
                 start: c.start,
                 in: c.in,
                 out: c.out,
                 transition: c.transition ?? null,
+                speed: c.speed ?? 1,
               })),
           audio:
             single || this.audioMuted
@@ -1016,6 +1087,7 @@ class Studio {
               : this.audio.map((a) => ({ path: a.path, start: a.start, in: a.in, out: a.out, volume: a.volume })),
           total: single ? single.duration : this.timelineDuration,
           format: opts.format ?? "mp4",
+          transparent: !!opts.transparent,
           captions: single ? [] : this.captions,
           burnCaptions: !!opts.burnCaptions,
           srt: opts.srt ?? true,
@@ -1043,6 +1115,7 @@ class Studio {
         case "list_scenes": {
           return reply({
             ok: true,
+            project: this.dir,
             latex_installed: !!this.worker.latex,
             files: this.files.map((f) => ({
               file: basename(f),
@@ -1084,6 +1157,10 @@ class Studio {
           if (!this.clips.length) return reply({ ok: false, error: "The timeline is empty. Call arrange_timeline or add_to_timeline first." });
           const segments = [];
           for (const cl of [...this.clips].sort((a, b) => a.start - b.start)) {
+            if (cl.media) {
+              segments.push({ start: cl.start, end: cl.start + clipLen(cl), in: cl.in, video: cl.file, scene: cl.scene, image: cl.media === "image" });
+              continue;
+            }
             let r: Render | null | undefined = this.renders[sceneKey(cl.file, cl.scene)];
             if (!r) r = await this.render(cl.file, cl.scene, this.previewQuality);
             if (r) segments.push({ start: cl.start, end: cl.start + clipLen(cl), in: cl.in, video: r.video, scene: cl.scene });
@@ -1093,8 +1170,19 @@ class Studio {
         case "get_timeline":
           return reply({
             ok: true,
-            video: this.clips.map((cl, i) => ({ index: i, file: basename(cl.file), scene: cl.scene, start: cl.start, in: cl.in, out: cl.out })),
-            audio: this.audio.map((a) => ({ name: a.name, start: a.start, in: a.in, out: a.out, volume: a.volume })),
+            video: this.clips.map((cl, i) => ({
+              index: i,
+              file: basename(cl.file),
+              scene: cl.scene,
+              start: cl.start,
+              in: cl.in,
+              out: cl.out,
+              speed: cl.speed ?? 1,
+              duration: clipLen(cl),
+              kind: cl.media ?? "scene",
+              transition: cl.transition ?? null,
+            })),
+            audio: this.audio.map((a, i) => ({ index: i, name: a.name, start: a.start, in: a.in, out: a.out, volume: a.volume })),
             duration: this.timelineDuration,
           });
         case "add_to_timeline": {
@@ -1103,6 +1191,133 @@ class Studio {
           const clip = await this.addToTimeline(file, String(c.args.scene), typeof c.args.start === "number" ? c.args.start : undefined);
           if (!clip) return reply({ ok: false, error: this.error?.message ?? "Render failed.", line: this.error?.line ?? null });
           return reply({ ok: true, index: this.clips.indexOf(clip), start: clip.start, duration: clipLen(clip) });
+        }
+        case "get_captions":
+          return reply({ ok: true, captions: this.captions.map((cp, i) => ({ index: i, start: cp.start, end: cp.end, text: cp.text })) });
+        case "generate_captions": {
+          const { captionsFromVoiceovers } = await import("./captions");
+          const made = await captionsFromVoiceovers();
+          return reply({ ok: true, made, total: this.captions.length });
+        }
+        case "set_captions": {
+          const list = (c.args.captions as { start: number; end: number; text: string }[]) ?? [];
+          this.setCaptions(list.map((x) => ({ id: uid(), start: Math.max(0, +x.start), end: Math.max(+x.start + 0.2, +x.end), text: String(x.text) })));
+          return reply({ ok: true, total: this.captions.length });
+        }
+        case "set_transition": {
+          const clip = this.clips[Number(c.args.index)];
+          if (!clip) return reply({ ok: false, error: "No video clip at that index (see get_timeline)." });
+          const kind = String(c.args.kind);
+          this.setTransition(clip.id, kind === "none" ? null : { kind: kind as Transition["kind"], duration: Number(c.args.duration ?? 0.6) });
+          return reply({ ok: true });
+        }
+        case "set_frame_shape": {
+          const a = String(c.args.aspect) as Aspect;
+          if (!ASPECTS.some((x) => x.id === a)) return reply({ ok: false, error: "Unknown frame shape." });
+          await this.setAspect(a);
+          return reply({ ok: true, aspect: a, frame_units: this.frameUnits() });
+        }
+        case "export_video": {
+          if (!this.dir) return reply({ ok: false, error: "No project is open." });
+          const format = (String(c.args.format ?? "mp4") as ExportFormat);
+          const fmt = EXPORT_FORMATS.find((f) => f.id === format);
+          const preset = EXPORT_PRESETS.find((p) => p.id === (c.args.resolution ?? "high")) ?? EXPORT_PRESETS[1];
+          if (!fmt) return reply({ ok: false, error: "Unknown format." });
+          let only: string | null = null;
+          if (c.args.scene) {
+            const file = this.resolveFile(String(c.args.file ?? ""));
+            if (!file) return reply({ ok: false, error: `No file named ${c.args.file}.` });
+            only = sceneKey(file, String(c.args.scene));
+          } else if (!this.clips.length) return reply({ ok: false, error: "The timeline is empty." });
+          const base = only ? String(c.args.scene) : basename(this.dir);
+          const output = c.args.output ? String(c.args.output) : joinPath(this.dir, fmt.ext ? `${base}.${fmt.ext}` : `${base} frames`);
+          const captions = String(c.args.captions ?? (this.captions.length ? "srt" : "off"));
+          const r = await this.exportVideo(preset, output, () => {}, {
+            format,
+            only,
+            transparent: !!c.args.transparent,
+            burnCaptions: captions === "burn",
+            srt: captions !== "off",
+          });
+          return reply({ ok: true, output: r.output, srt: r.srt ?? null });
+        }
+        case "list_music": {
+          const lib = await api.musicLibrary();
+          return reply({ ok: true, license: lib.license, tracks: lib.tracks.map((t) => ({ id: t.id, title: t.title, mood: t.mood, bpm: t.bpm, seconds: t.duration })) });
+        }
+        case "add_music": {
+          const lib = await api.musicLibrary();
+          const t = lib.tracks.find((x) => x.id === c.args.id);
+          if (!t) return reply({ ok: false, error: "No track with that id (see list_music)." });
+          const clip = await this.addAudio(t.path, Number(c.args.start ?? 0));
+          if (clip && c.args.volume !== undefined) this.setVolume(clip.id, Number(c.args.volume));
+          return reply({ ok: true, name: t.title });
+        }
+        case "add_media_to_timeline": {
+          if (!this.dir) return reply({ ok: false, error: "No project is open." });
+          let path = String(c.args.path);
+          if (!/^[a-z]:[\\/]/i.test(path)) path = joinPath(this.dir, path);
+          if (!MEDIA_EXT.test(path)) return reply({ ok: false, error: "That isn't a photo or video file." });
+          // Footage from outside the project is copied in, so the project stays complete.
+          if (!path.toLowerCase().startsWith(this.dir.toLowerCase())) [path] = await this.importFiles([path], joinPath(this.dir, "footage"));
+          const clip = await this.addMedia(path, c.args.start === undefined ? undefined : Number(c.args.start), c.args.seconds ? Number(c.args.seconds) : undefined);
+          return reply({ ok: true, index: this.clips.indexOf(clip), start: clip.start, duration: clipLen(clip), kind: clip.media });
+        }
+        case "list_python_packages": {
+          const [pk, gl] = await Promise.all([api.packagesList(), api.manimglStatus()]);
+          return reply({ ok: true, packages: (pk.packages ?? []).map((p) => `${p.name} ${p.version}`), manimgl: gl });
+        }
+        case "install_python_package": {
+          const name = String(c.args.name);
+          const ok = await ask(`The assistant wants to install “${name}” from PyPI.\n\nWhy: ${c.args.reason ?? "not given"}\n\nInstall it?`, {
+            title: "Install a Python package",
+            kind: "info",
+            okLabel: "Install",
+            cancelLabel: "Not now",
+          });
+          if (!ok) return reply({ ok: false, error: "The user chose not to install it. Find another way, or ask them." });
+          const r = await api.packagesInstall(name);
+          if (r.ok) await api.restartWorker();
+          return reply(r.ok ? { ok: true, installed: name } : { ok: false, error: r.error });
+        }
+        case "export_project_zip": {
+          if (!this.dir) return reply({ ok: false, error: "No project is open." });
+          const dest = `${this.dir}.zip`;
+          const info = await api.exportProjectZip(this.dir, dest, !!c.args.include_renders);
+          return reply({ ok: true, path: info.path, files: info.files });
+        }
+        case "save_as_template": {
+          if (!this.dir) return reply({ ok: false, error: "No project is open." });
+          const id = await api.saveUserTemplate(this.dir, String(c.args.name), String(c.args.description ?? ""));
+          return reply({ ok: true, id });
+        }
+        case "import_into_project": {
+          if (!this.dir) return reply({ ok: false, error: "No project is open." });
+          const folder = c.args.folder ? joinPath(this.dir, String(c.args.folder)) : this.dir;
+          const [path] = await this.importFiles([String(c.args.path)], folder);
+          return reply({ ok: true, path, relative: path.slice(this.dir.length + 1).replaceAll("\\", "/") });
+        }
+        case "remove_audio": {
+          const i = Number(c.args.index);
+          if (!(i >= 0 && i < this.audio.length)) return reply({ ok: false, error: "No audio clip at that index (see get_timeline)." });
+          const [gone] = this.audio.splice(i, 1);
+          this.persist();
+          return reply({ ok: true, removed: gone.name });
+        }
+        case "clear_audio": {
+          const n = this.audio.length;
+          this.audio = [];
+          this.persist();
+          return reply({ ok: true, removed: n });
+        }
+        case "set_clip_speed": {
+          const i = Number(c.args.index);
+          const clip = this.clips[i];
+          if (!clip) return reply({ ok: false, error: "No video clip at that index (see get_timeline)." });
+          const speed = Number(c.args.speed);
+          if (!(speed >= 0.25 && speed <= 4)) return reply({ ok: false, error: "Speed must be between 0.25 and 4." });
+          this.setClipSpeed(clip.id, speed);
+          return reply({ ok: true, index: this.clips.indexOf(clip), speed: clip.speed ?? 1, duration: clipLen(clip) });
         }
         case "remove_from_timeline": {
           const i = Number(c.args.index);

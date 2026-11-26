@@ -265,6 +265,17 @@ pub fn create_project(app: AppHandle, name: String, template: Option<String>) ->
     let root = projects_root()?;
     let dir = unique_dir(&root, &name);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // One of the user's own templates: copy everything it holds.
+    if let Some(slug) = template.as_deref().and_then(|t| t.strip_prefix("user:")) {
+        let src = user_templates_dir()?.join(slug);
+        if !src.is_dir() {
+            return Err("That template no longer exists.".into());
+        }
+        copy_tree(&src, &dir, &|rel| rel != "template.json" && rel != "thumb.jpg")?;
+        let path = dir.to_string_lossy().into_owned();
+        touch_recent(&app, &path);
+        return Ok(path);
+    }
     let src = templates_dir(&app).join(template.as_deref().unwrap_or("blank"));
     if !src.is_dir() {
         return Err(format!("Template {} is missing.", template.unwrap_or_default()));
@@ -375,4 +386,126 @@ pub fn save_attachment_data(project_dir: String, name: String, data: String) -> 
     let dest = unique_file(&attachments_dir(&project_dir)?, &name);
     fs::write(&dest, bytes).map_err(|e| e.to_string())?;
     Ok(dest.to_string_lossy().into_owned())
+}
+
+
+// ------------------------------------------------------------ the user's own templates
+
+fn user_templates_dir() -> Result<PathBuf, String> {
+    Ok(dirs::config_dir().ok_or("No settings folder.")?.join("dev.manimpro.app").join("templates"))
+}
+
+/// Copies a folder tree, skipping renders, caches and anything `keep` rejects (relative, forward slashes).
+fn copy_tree(src: &Path, dest: &Path, keep: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    fn walk(root: &Path, dir: &Path, dest: &Path, keep: &dyn Fn(&str) -> bool) -> Result<(), String> {
+        for e in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+            let p = e.path();
+            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            if p.is_dir() {
+                if [".manimpro", "__pycache__", "media", ".git", "node_modules"].contains(&name.as_str()) {
+                    continue;
+                }
+                walk(root, &p, dest, keep)?;
+            } else if keep(&rel) {
+                let out = dest.join(&rel);
+                if let Some(parent) = out.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                fs::copy(&p, &out).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+    walk(src, src, dest, keep)
+}
+
+#[derive(Serialize)]
+pub struct UserTemplate {
+    id: String,
+    title: String,
+    description: String,
+    thumbnail: Option<String>,
+    scenes: Vec<String>,
+    created: u64,
+}
+
+/// Saves a project (code, data, assets, timeline) as a template. Returns its id ("user:slug").
+#[tauri::command]
+pub fn save_user_template(project: String, name: String, description: Option<String>) -> Result<String, String> {
+    let src = PathBuf::from(&project);
+    let slug: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        return Err("Give the template a name.".into());
+    }
+    let dest = user_templates_dir()?.join(&slug);
+    if dest.exists() {
+        fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    copy_tree(&src, &dest, &|_| true)?;
+    let thumb = src.join(".manimpro").join("thumb.jpg");
+    if thumb.is_file() {
+        let _ = fs::copy(&thumb, dest.join("thumb.jpg"));
+    }
+    let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let meta = serde_json::json!({ "title": name.trim(), "description": description.unwrap_or_default(), "created": now });
+    fs::write(dest.join("template.json"), meta.to_string()).map_err(|e| e.to_string())?;
+    Ok(format!("user:{slug}"))
+}
+
+#[tauri::command]
+pub fn list_user_templates() -> Result<Vec<UserTemplate>, String> {
+    let dir = user_templates_dir()?;
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(&dir) else { return Ok(out) };
+    for e in entries.flatten() {
+        let p = e.path();
+        let Ok(meta) = fs::read_to_string(p.join("template.json")) else { continue };
+        let meta: Value = serde_json::from_str(&meta).unwrap_or_default();
+        let mut scenes = Vec::new();
+        for f in fs::read_dir(&p).into_iter().flatten().flatten() {
+            if f.path().extension().is_some_and(|x| x == "py") {
+                for line in fs::read_to_string(f.path()).unwrap_or_default().lines() {
+                    if let Some(rest) = line.strip_prefix("class ") {
+                        if rest.contains("Scene") || rest.contains("Slide") {
+                            scenes.push(rest.split(['(', ':']).next().unwrap_or("").trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let thumb = p.join("thumb.jpg");
+        out.push(UserTemplate {
+            id: format!("user:{}", e.file_name().to_string_lossy()),
+            title: meta.get("title").and_then(Value::as_str).unwrap_or("Template").to_string(),
+            description: meta.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+            thumbnail: thumb.is_file().then(|| thumb.to_string_lossy().into_owned()),
+            scenes,
+            created: meta.get("created").and_then(Value::as_u64).unwrap_or(0),
+        });
+    }
+    out.sort_by(|a, b| b.created.cmp(&a.created));
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn delete_user_template(id: String) -> Result<(), String> {
+    let slug = id.strip_prefix("user:").ok_or("Not one of your templates.")?;
+    if slug.contains(['/', '\\', '.']) {
+        return Err("Bad template id.".into());
+    }
+    let dir = user_templates_dir()?.join(slug);
+    if dir.exists() {
+        fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }

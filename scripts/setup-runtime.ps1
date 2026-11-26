@@ -37,7 +37,8 @@ $exe = Join-Path $python "python.exe"
 Get-ChildItem $python -Recurse -Filter "EXTERNALLY-MANAGED" -ErrorAction SilentlyContinue | Remove-Item -Force
 
 Write-Host "Installing manim and ffmpeg into the runtime..."
-uv pip install --python $exe --link-mode copy manim imageio-ffmpeg
+# jedi + pyflakes power the code editor's completions, hover docs and warnings.
+uv pip install --python $exe --link-mode copy manim imageio-ffmpeg jedi pyflakes
 if ($LASTEXITCODE -ne 0) { throw "uv pip install failed" }
 
 Write-Host "Precompiling bytecode (faster first launch)..."

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { api } from "#lib/api.ts";
   import { languageOf } from "#lib/filetypes.ts";
   import { onMount } from "svelte";
   import type * as Monaco from "monaco-editor";
@@ -76,6 +77,108 @@
 
       defineTheme(m);
 
+      // ---- Python help from the render worker (jedi + pyflakes).
+      const where = (model: Monaco.editor.ITextModel, pos: Monaco.Position) => ({
+        source: model.getValue(),
+        path: studio.activeFile ?? "scene.py",
+        project: studio.dir,
+        line: pos.lineNumber,
+        column: pos.column - 1,
+      });
+      const isPy = () => !studio.activeFile || /\.py$/i.test(studio.activeFile);
+      const KINDS: Record<string, Monaco.languages.CompletionItemKind> = {
+        Class: m.languages.CompletionItemKind.Class,
+        Function: m.languages.CompletionItemKind.Function,
+        Variable: m.languages.CompletionItemKind.Variable,
+        Module: m.languages.CompletionItemKind.Module,
+        Keyword: m.languages.CompletionItemKind.Keyword,
+        Property: m.languages.CompletionItemKind.Property,
+        File: m.languages.CompletionItemKind.File,
+      };
+      disposables.push(
+        m.languages.registerCompletionItemProvider("python", {
+          triggerCharacters: ["."],
+          async provideCompletionItems(model, position) {
+            if (!settings.value.pythonHelp || !isPy()) return { suggestions: [] };
+            const word = model.getWordUntilPosition(position);
+            const range = {
+              startLineNumber: position.lineNumber,
+              endLineNumber: position.lineNumber,
+              startColumn: word.startColumn,
+              endColumn: word.endColumn,
+            };
+            const ask = where(model, position);
+            const r = await api.call<{ items?: { label: string; kind: string; detail: string }[] }>("complete", ask).catch(() => ({ items: [] }));
+            return {
+              suggestions: (r.items ?? []).map((it, i) => ({
+                label: it.label,
+                kind: KINDS[it.kind] ?? m.languages.CompletionItemKind.Text,
+                detail: it.detail,
+                insertText: it.label,
+                sortText: String(i).padStart(4, "0"),
+                range,
+                // Docs load when an item is highlighted.
+                _ask: { ...ask, name: it.label },
+              })) as Monaco.languages.CompletionItem[],
+            };
+          },
+          async resolveCompletionItem(item) {
+            const ask = (item as unknown as { _ask?: Record<string, unknown> })._ask;
+            if (!ask) return item;
+            const r = await api.call<{ detail?: string; doc?: string }>("complete_resolve", ask).catch(() => ({}) as { detail?: string; doc?: string });
+            if (r.detail) item.detail = r.detail;
+            if (r.doc) item.documentation = { value: "```text\n" + r.doc + "\n```" };
+            return item;
+          },
+        }),
+        m.languages.registerHoverProvider("python", {
+          async provideHover(model, position) {
+            if (!settings.value.pythonHelp || !isPy() || !model.getWordAtPosition(position)) return null;
+            const r = await api.call<{ signature?: string; doc?: string; module?: string }>("hover", where(model, position)).catch(() => ({}) as { signature?: string; doc?: string; module?: string });
+            if (!r.signature) return null;
+            const parts = [{ value: "```python\n" + r.signature + "\n```" }];
+            if (r.doc) parts.push({ value: r.doc.length > 1500 ? r.doc.slice(0, 1500) + " …" : r.doc });
+            if (r.module) parts.push({ value: `*${r.module}*` });
+            return { contents: parts };
+          },
+        }),
+        m.languages.registerSignatureHelpProvider("python", {
+          signatureHelpTriggerCharacters: ["(", ","],
+          signatureHelpRetriggerCharacters: [","],
+          async provideSignatureHelp(model, position) {
+            if (!settings.value.pythonHelp || !isPy()) return null;
+            const r = await api.call<{ signatures?: { label: string; params: string[]; active: number; doc: string }[] }>("signature", where(model, position)).catch(() => ({ signatures: [] }));
+            const sigs = r.signatures ?? [];
+            if (!sigs.length) return null;
+            return {
+              value: {
+                signatures: sigs.map((s) => ({
+                  label: s.label,
+                  documentation: s.doc ? { value: s.doc.slice(0, 1200) } : undefined,
+                  parameters: s.params.map((p) => ({ label: p })),
+                })),
+                activeSignature: 0,
+                activeParameter: sigs[0].active,
+              },
+              dispose() {},
+            };
+          },
+        }),
+        m.languages.registerDefinitionProvider("python", {
+          async provideDefinition(model, position) {
+            if (!settings.value.pythonHelp || !isPy()) return null;
+            const r = await api.call<{ path?: string; line?: number; column?: number }>("definition", where(model, position)).catch(() => ({}) as { path?: string; line?: number; column?: number });
+            if (!r.path || !r.line) return null;
+            // Inside the open file: jump there. Elsewhere (Manim's own source): show where it is.
+            if (studio.activeFile && r.path.toLowerCase() === studio.activeFile.toLowerCase()) {
+              return { uri: model.uri, range: new m.Range(r.line, (r.column ?? 0) + 1, r.line, (r.column ?? 0) + 1) };
+            }
+            studio.definitionHint = `${r.path.replace(/^.*site-packages[\\/]/, "")}, line ${r.line}`;
+            return null;
+          },
+        }),
+      );
+
       disposables.push(
         m.languages.registerCompletionItemProvider("python", {
           provideCompletionItems(model, position) {
@@ -88,7 +191,8 @@
               endColumn: word.endColumn,
             };
             return {
-              suggestions: MANIM_COMPLETIONS.map(([label, kind, detail, insert]) => ({
+              // With Python help on, real completions come from jedi; keep only the snippets here.
+              suggestions: MANIM_COMPLETIONS.filter(([, kind]) => !(settings.value.pythonHelp && isPy()) || kind === "Snippet").map(([label, kind, detail, insert]) => ({
                 label,
                 kind: m.languages.CompletionItemKind[kind],
                 detail,
@@ -117,7 +221,42 @@
         hideCursorInOverviewRuler: true,
         scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
       });
+      let lintTimer: ReturnType<typeof setTimeout> | undefined;
+      const lint = async () => {
+        const model = ed.getModel();
+        if (!model) return;
+        if (!settings.value.pythonHelp || !isPy()) return m.editor.setModelMarkers(model, "pyflakes", []);
+        const version = model.getAlternativeVersionId();
+        const r = await api
+          .call<{ problems?: { line: number; column: number; message: string; severity: string }[] }>("lint", { source: model.getValue(), path: studio.activeFile ?? "scene.py" })
+          .catch(() => ({ problems: [] }));
+        if (model.getAlternativeVersionId() !== version) return;
+        m.editor.setModelMarkers(
+          model,
+          "pyflakes",
+          (r.problems ?? []).map((p) => {
+            const word = model.getWordAtPosition({ lineNumber: p.line, column: p.column + 1 });
+            return {
+              severity: p.severity === "error" ? m.MarkerSeverity.Error : m.MarkerSeverity.Warning,
+              message: p.message,
+              startLineNumber: p.line,
+              endLineNumber: p.line,
+              startColumn: word?.startColumn ?? p.column + 1,
+              endColumn: word?.endColumn ?? model.getLineMaxColumn(p.line),
+              source: "pyflakes",
+            };
+          }),
+        );
+      };
+      const relint = () => {
+        clearTimeout(lintTimer);
+        lintTimer = setTimeout(lint, 200);
+      };
+      window.addEventListener("mp-lint", relint);
+      disposables.push({ dispose: () => window.removeEventListener("mp-lint", relint) });
       ed.onDidChangeModelContent(() => {
+        clearTimeout(lintTimer);
+        lintTimer = setTimeout(lint, 700);
         if (!applying) studio.codeChanged(ed.getValue());
       });
       ed.onDidChangeCursorPosition((e) => (studio.cursorLine = e.position.lineNumber));
@@ -167,6 +306,7 @@
     applying = true;
     editor.setValue(text);
     applying = false;
+    window.dispatchEvent(new CustomEvent("mp-lint"));
     editor.setScrollTop(0);
   });
 

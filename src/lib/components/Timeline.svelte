@@ -1,8 +1,9 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { studio, sceneKey, type Clip, type AudioClip, type Track, type Caption } from "#lib/studio.svelte.ts";
+  import { studio, sceneKey, type Clip, type AudioClip, type Track, type Caption, clipLen, MEDIA_EXT } from "#lib/studio.svelte.ts";
   import { timecode, shortTime, clamp } from "#lib/time.ts";
   import { mediaUrl } from "#lib/api.ts";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { captionsFromVoiceovers } from "#lib/captions.ts";
   import Icon from "./Icon.svelte";
   import { settings } from "#lib/settings.svelte.ts";
@@ -16,6 +17,7 @@
 
   /** Double-click a scene clip: open its code at the scene. */
   async function openScript(clip: Clip) {
+    if (clip.media) return;
     await studio.openFile(clip.file);
     ui.mainTab = "code";
     const s = studio.scenes[clip.file]?.find((x) => x.name === clip.scene);
@@ -42,13 +44,22 @@
       { label: "Trim end to playhead", icon: "trimEnd", disabled: !inside, hint: why, action: () => studio.trimToPlayhead(clip.id, "end") },
       "separator",
     ];
-    if (kind === "video" && "scene" in clip) {
+    if (kind === "video" && "scene" in clip && clip.media) {
+      const sp = clip.speed ?? 1;
+      if (clip.media === "video") {
+        for (const v of [0.5, 1, 1.5, 2]) {
+          items.push({ label: v === 1 ? "Normal speed" : `${v}× speed`, icon: sp === v ? "check" : "play", action: () => studio.setClipSpeed(clip.id, v) });
+        }
+        items.push("separator");
+      }
+      items.push({ label: "Show in folder", icon: "reveal", action: () => revealItemInDir(clip.file) }, "separator");
+    } else if (kind === "video" && "scene" in clip) {
       const key = sceneKey(clip.file, clip.scene);
       const prev = studio.clipBefore(clip.id);
       if (prev) {
         const tr = clip.transition;
         const d = tr?.duration ?? 0.6;
-        const touching = Math.abs(prev.start + (prev.out - prev.in) - clip.start) < 0.05;
+        const touching = Math.abs(prev.start + clipLen(prev) - clip.start) < 0.05;
         const lengths = [0.3, 0.6, 1, 1.5];
         const nextLen = lengths[(lengths.indexOf(d) + 1) % lengths.length] ?? 0.6;
         items.push(
@@ -65,6 +76,15 @@
           "separator",
         );
       }
+      const sp = clip.speed ?? 1;
+      for (const v of [0.5, 1, 1.5, 2]) {
+        items.push({
+          label: v === 1 ? "Normal speed" : `${v}× speed`,
+          icon: sp === v ? "check" : v < 1 ? "stepBack" : v > 1 ? "stepFwd" : "play",
+          action: () => studio.setClipSpeed(clip.id, v),
+        });
+      }
+      items.push("separator");
       items.push(
         { label: "Show in viewer", icon: "play", disabled: !studio.renders[key], action: () => studio.showSource(key) },
         {
@@ -91,6 +111,28 @@
       { label: "Delete", icon: "trash", shortcut: "Del", danger: true, action: deleteViaShortcut },
     );
     menu = { x: e.clientX, y: e.clientY, items };
+  }
+
+  // ---- Your own photos and videos
+  async function addFootage() {
+    if (!studio.dir) return;
+    const picked = await open({
+      multiple: true,
+      title: "Add photos or videos",
+      filters: [{ name: "Photos and videos", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif", "mp4", "mov", "webm", "mkv", "m4v"] }],
+    });
+    const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!list.length) return;
+    try {
+      const copied = await studio.importFiles(list, `${studio.dir}\\footage`);
+      let at = studio.playhead > 0 ? studio.playhead : undefined;
+      for (const p of copied) {
+        const c = await studio.addMedia(p, at);
+        at = at !== undefined ? c.start + clipLen(c) : undefined;
+      }
+    } catch (err) {
+      studio.error = { message: String(err) };
+    }
   }
 
   // ---- Captions
@@ -195,7 +237,7 @@
   function snap(t: number, ignore?: string) {
     if (!settings.value.snapping) return t;
     const targets = [0, studio.playhead];
-    for (const c of [...studio.clips, ...studio.audio]) if (c.id !== ignore) targets.push(c.start, c.start + c.out - c.in);
+    for (const c of [...studio.clips, ...studio.audio]) if (c.id !== ignore) targets.push(c.start, c.start + clipLen(c));
     let best = t;
     let bestD = SNAP_PX / studio.zoom;
     for (const s of targets) {
@@ -234,7 +276,7 @@
     studio.selectedClip = clip.id;
     studio.viewerMode = "program";
     const start0 = clip.start;
-    const len = clip.out - clip.in;
+    const len = clipLen(clip);
     drag(
       e,
       (dt) => {
@@ -257,12 +299,13 @@
     drag(
       e,
       (dt) => {
+        const sp = (clip as Clip).speed ?? 1;
         if (edge === "in") {
           const t = snap(start0 + dt, clip.id);
-          studio.trimClip(clip.id, "in", in0 + (t - start0));
+          studio.trimClip(clip.id, "in", in0 + (t - start0) * sp);
         } else {
-          const end = snap(start0 + (out0 - in0) + dt, clip.id);
-          studio.trimClip(clip.id, "out", in0 + (end - start0));
+          const end = snap(start0 + (out0 - in0) / sp + dt, clip.id);
+          studio.trimClip(clip.id, "out", in0 + (end - start0) * sp);
         }
       },
       () => studio.resolveOverlaps(kind, clip.id),
@@ -270,16 +313,23 @@
   }
 
   function onDragOver(e: DragEvent) {
-    if (!e.dataTransfer?.types.includes("application/x-manim-scene")) return;
+    const types = e.dataTransfer?.types ?? [];
+    if (!types.includes("application/x-manim-scene") && !types.includes("application/x-mp-path")) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
     dropX = snap(toTime(e.clientX)) * studio.zoom;
   }
 
   function onDrop(e: DragEvent) {
     const key = e.dataTransfer?.getData("application/x-manim-scene");
+    const path = e.dataTransfer?.getData("application/x-mp-path");
     const at = dropX !== null ? dropX / studio.zoom : undefined;
     dropX = null;
+    if (!key && path && MEDIA_EXT.test(path)) {
+      e.preventDefault();
+      studio.addMedia(path, at).catch((err) => (studio.error = { message: String(err) }));
+      return;
+    }
     if (!key) return;
     e.preventDefault();
     const [file, scene] = key.split("::");
@@ -313,7 +363,7 @@
   const selectedAudio = $derived(selectedInfo?.kind === "audio" ? (selectedInfo.clip as AudioClip) : null);
   const canSplit = $derived(
     !![...studio.clips, ...studio.audio].find(
-      (c) => studio.playhead > c.start + 0.1 && studio.playhead < c.start + c.out - c.in - 0.1,
+      (c) => studio.playhead > c.start + 0.1 && studio.playhead < c.start + clipLen(c) - 0.1,
     ),
   );
 
@@ -380,6 +430,9 @@
       </button>
       <button class="icon-btn" title="Add music or voiceover" aria-label="Add audio" disabled={!studio.dir} onclick={addAudio}>
         <Icon name="music" />
+      </button>
+      <button class="icon-btn" title="Add a photo or video" aria-label="Add a photo or video" disabled={!studio.dir} onclick={addFootage}>
+        <Icon name="image" />
       </button>
       <button class="icon-btn" title="Captions" aria-label="Captions" disabled={!studio.dir} onclick={() => editCaptions(null)}>
         <Icon name="captions" />
@@ -454,13 +507,14 @@
               class="clip"
               role="listitem"
               class:selected={clip.id === studio.selectedClip}
-              class:stale={!r}
+              class:stale={!r && !clip.media}
+              class:media={!!clip.media}
               style:left="{clip.start * studio.zoom}px"
-              style:width="{(clip.out - clip.in) * studio.zoom}px"
+              style:width="{clipLen(clip) * studio.zoom}px"
               onpointerdown={(e) => moveClip(e, clip)}
               oncontextmenu={(e) => clipMenu(e, clip, "video")}
               ondblclick={() => openScript(clip)}
-              title="{clip.scene} · {shortTime(clip.out - clip.in)}"
+              title="{clip.scene} · {shortTime(clipLen(clip))}{clip.speed ? ` · ${clip.speed}×` : ''}"
             >
               <div class="handle left" role="presentation" onpointerdown={(e) => trim(e, clip, "in")}></div>
               {#if clip.transition}
@@ -471,11 +525,15 @@
                 ></span>
               {/if}
               <div class="clip-body">
+                {#if clip.media}<span class="media-badge">{clip.media === "image" ? "Photo" : "Video"}</span>{/if}
                 <span class="clip-name">{clip.scene}</span>
-                <span class="clip-len">{shortTime(clip.out - clip.in)}</span>
+                <span class="clip-len">{shortTime(clipLen(clip))}</span>
+                {#if clip.speed}<span class="speed-badge">{clip.speed}×</span>{/if}
               </div>
-              {#if r?.strip && r.stripFrames && settings.value.showFilmstrips}
-                {@const width = (clip.out - clip.in) * studio.zoom}
+              {#if clip.media === "image" && settings.value.showFilmstrips}
+                <div class="strip frames photo-strip" aria-hidden="true" style:background-image="url('{mediaUrl(clip.file)}')"></div>
+              {:else if r?.strip && r.stripFrames && settings.value.showFilmstrips}
+                {@const width = clipLen(clip) * studio.zoom}
                 {@const tileW = 56}
                 {@const n = Math.max(1, Math.ceil(width / tileW))}
                 <div class="strip frames" aria-hidden="true">
@@ -618,6 +676,30 @@
 </section>
 
 <style>
+  .clip.media {
+    background: color-mix(in srgb, #9a9aa2 26%, var(--panel-2));
+    border-color: color-mix(in srgb, #9a9aa2 45%, transparent);
+  }
+  .photo-strip {
+    background-size: auto 100%;
+    background-repeat: repeat-x;
+    opacity: 0.85;
+  }
+  .media-badge {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 5px;
+    background: rgb(0 0 0 / 0.45);
+    font-size: 10px;
+  }
+  .speed-badge {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 5px;
+    background: rgb(0 0 0 / 0.45);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
   .tr-badge {
     position: absolute;
     left: 0;

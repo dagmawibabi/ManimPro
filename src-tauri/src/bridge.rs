@@ -100,3 +100,33 @@ pub fn bridge_reply(bridge: tauri::State<'_, Bridge>, call: u64, result: Value) 
         let _ = tx.send(result);
     }
 }
+
+/// Where the running app publishes its bridge address for other apps' MCP clients.
+pub fn share_file() -> Option<std::path::PathBuf> {
+    Some(dirs::config_dir()?.join("dev.manimpro.app").join("bridge.json"))
+}
+
+/// Turns "Let other apps use ManimPro" on or off. On: writes the address file and returns
+/// what an MCP client needs to launch ManimPro's tool server.
+#[tauri::command]
+pub fn mcp_share(app: AppHandle, bridge: tauri::State<'_, Bridge>, enable: bool) -> Result<Value, String> {
+    let file = share_file().ok_or("No settings folder.")?;
+    if !enable {
+        let _ = std::fs::remove_file(&file);
+        return Ok(Value::Null);
+    }
+    let (port, token) = bridge.address();
+    if port == 0 {
+        return Err("The tool bridge isn't running yet.".into());
+    }
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let info = serde_json::json!({ "port": port, "token": token, "pid": std::process::id() });
+    std::fs::write(&file, info.to_string()).map_err(|e| e.to_string())?;
+    let rt = crate::worker::runtime_paths(&app);
+    Ok(serde_json::json!({
+        "python": rt.python.to_string_lossy(),
+        "server": rt.script.with_file_name("mcp_server.py").to_string_lossy(),
+    }))
+}

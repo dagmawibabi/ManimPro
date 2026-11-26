@@ -1,5 +1,5 @@
 /** Captions built from the voiceovers on the timeline. */
-import { studio, type Caption } from "./studio.svelte";
+import { studio, sceneKey, type Caption } from "./studio.svelte";
 import { voice } from "./voice.svelte";
 
 const MAX_LINE = 42;
@@ -61,6 +61,25 @@ export async function captionsFromVoiceovers(): Promise<number> {
       const en = Math.min(s1, a.out);
       if (en - st < 0.3) continue;
       made.push({ id: `v-${uid()}`, start: a.start + st - a.in, end: a.start + en - a.in, text: p });
+    }
+  }
+  // Narration spoken inside scenes (self.voiceover): exact timing, mapped through trims and speed.
+  for (const clip of studio.clips) {
+    const r = studio.renders[sceneKey(clip.file, clip.scene)];
+    const sp = clip.speed ?? 1;
+    for (const line of r?.narration ?? []) {
+      const pieces = splitText(line.text);
+      const total = pieces.reduce((n, p) => n + p.length, 0) || 1;
+      let acc = 0;
+      for (const p of pieces) {
+        const s0 = line.start + ((line.end - line.start) * acc) / total;
+        acc += p.length;
+        const s1 = line.start + ((line.end - line.start) * acc) / total;
+        const st = Math.max(s0, clip.in);
+        const en = Math.min(s1, clip.out);
+        if (en - st < 0.3) continue;
+        made.push({ id: `v-${uid()}`, start: clip.start + (st - clip.in) / sp, end: clip.start + (en - clip.in) / sp, text: p });
+      }
     }
   }
   const own = studio.captions.filter((c) => !c.id.startsWith("v-"));

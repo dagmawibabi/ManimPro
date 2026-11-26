@@ -7,7 +7,7 @@
   import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import { extOf, iconOf, isImage, isText } from "#lib/filetypes.ts";
-  import { studio } from "#lib/studio.svelte.ts";
+  import { studio, MEDIA_EXT } from "#lib/studio.svelte.ts";
   import { api } from "#lib/api.ts";
   import { ui } from "#lib/ui.svelte.ts";
   import Icon from "./Icon.svelte";
@@ -121,6 +121,9 @@
           : []),
         ...(node.kind === "file" && extOf(node.path) !== "py"
           ? [{ label: "Open with default app", icon: "link", action: () => openPath(node.path).catch((e) => (error = String(e))) } as MenuItem]
+          : []),
+        ...(node.kind === "file" && MEDIA_EXT.test(node.path)
+          ? [{ label: "Add to timeline", icon: "plus", action: () => studio.addMedia(node.path).catch((e) => (error = String(e))) } as MenuItem]
           : []),
         { label: "Copy path", icon: "copy", action: () => navigator.clipboard.writeText(node.path) },
         { label: "Show in folder", icon: "reveal", action: () => revealItemInDir(node.path) },

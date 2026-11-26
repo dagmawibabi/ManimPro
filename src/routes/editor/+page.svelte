@@ -48,7 +48,7 @@
     const p = order.indexOf("preview");
     const f = full ? order.indexOf(full) : -1;
     // Timeline tracks (1-based, inclusive): from the preview's edge up to the full-height panel.
-    const [t0, t1] = f < 0 ? [1, 5] : p < f ? [1, 2 * f] : [2 * f + 3, 5];
+    const [t0, t1] = f < 0 ? [1, 5] : p < f ? [1, 2 * f - 1] : [2 * f + 3, 5];
     const underTimeline = (track: number) => track >= t0 && track <= t1;
     const place = (track: number) => `1 / ${track} / ${underTimeline(track) ? 2 : 4} / ${track + 1}`;
     const area = Object.fromEntries(order.map((panel, i) => [panel, place(2 * i + 1)])) as Record<Panel, string>;

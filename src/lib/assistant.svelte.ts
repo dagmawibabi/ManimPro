@@ -388,12 +388,30 @@ class Assistant {
         prompt: prompt_,
         projectDir: studio.dir,
         session: chat.sessions[this.provider] ?? null,
-        instructions: this.instructions(),
+        instructions: await this.instructionsWithPackages(),
         files,
+        web: settings.value.agentWeb,
+        localFiles: settings.value.agentLocalFiles,
       });
     } catch (e) {
       this.runChatId = null;
       this.error(String(e));
+    }
+  }
+
+  /** Standing instructions plus which extra packages scenes can import. */
+  private async instructionsWithPackages(): Promise<string | null> {
+    const base = this.instructions();
+    try {
+      const [pk, gl] = await Promise.all([api.packagesList(), api.manimglStatus()]);
+      const names = (pk.packages ?? []).map((p) => p.name);
+      const extra = [
+        names.length ? `Extra Python packages installed for scenes: ${names.join(", ")}.` : "",
+        gl.installed ? "ManimGL is installed (files with `from manimlib import *` render with it)." : "",
+      ].filter(Boolean).join(" ");
+      return [base, extra].filter(Boolean).join("\n") || null;
+    } catch {
+      return base;
     }
   }
 

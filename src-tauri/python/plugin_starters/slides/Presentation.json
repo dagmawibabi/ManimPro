@@ -1,0 +1,79 @@
+{
+  "slides": [
+    {
+      "loop": false,
+      "auto_next": false,
+      "playback_rate": 1.0,
+      "reversed_playback_rate": 1.0,
+      "notes": "",
+      "dedent_notes": true,
+      "skip_animations": false,
+      "src": null,
+      "type": "video",
+      "direction": "horizontal",
+      "file": "slides\\files\\Presentation\\fda85f883665d341.mp4",
+      "rev_file": "slides\\files\\Presentation\\fda85f883665d341_reversed.mp4"
+    },
+    {
+      "loop": false,
+      "auto_next": false,
+      "playback_rate": 1.0,
+      "reversed_playback_rate": 1.0,
+      "notes": "",
+      "dedent_notes": true,
+      "skip_animations": false,
+      "src": null,
+      "type": "video",
+      "direction": "horizontal",
+      "file": "slides\\files\\Presentation\\30ffcc643a4a7217.mp4",
+      "rev_file": "slides\\files\\Presentation\\30ffcc643a4a7217_reversed.mp4"
+    },
+    {
+      "loop": false,
+      "auto_next": false,
+      "playback_rate": 1.0,
+      "reversed_playback_rate": 1.0,
+      "notes": "",
+      "dedent_notes": true,
+      "skip_animations": false,
+      "src": null,
+      "type": "video",
+      "direction": "horizontal",
+      "file": "slides\\files\\Presentation\\02a702958a5836d8.mp4",
+      "rev_file": "slides\\files\\Presentation\\02a702958a5836d8_reversed.mp4"
+    },
+    {
+      "loop": false,
+      "auto_next": false,
+      "playback_rate": 1.0,
+      "reversed_playback_rate": 1.0,
+      "notes": "",
+      "dedent_notes": true,
+      "skip_animations": false,
+      "src": null,
+      "type": "video",
+      "direction": "horizontal",
+      "file": "slides\\files\\Presentation\\01d105f4418ff101.mp4",
+      "rev_file": "slides\\files\\Presentation\\01d105f4418ff101_reversed.mp4"
+    },
+    {
+      "loop": false,
+      "auto_next": false,
+      "playback_rate": 1.0,
+      "reversed_playback_rate": 1.0,
+      "notes": "",
+      "dedent_notes": true,
+      "skip_animations": false,
+      "src": null,
+      "type": "video",
+      "direction": "horizontal",
+      "file": "slides\\files\\Presentation\\c7aa5265f95052e1.mp4",
+      "rev_file": "slides\\files\\Presentation\\c7aa5265f95052e1_reversed.mp4"
+    }
+  ],
+  "resolution": [
+    640,
+    360
+  ],
+  "background_color": "black"
+}

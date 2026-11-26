@@ -81,6 +81,7 @@ impl Worker {
             .env("PYTHONIOENCODING", "utf-8")
             .env_remove("PYTHONPATH")
             .env("MANIMPRO_PACKAGES", crate::packages::packages_dir(app).unwrap_or_default())
+            .env("MANIMPRO_MANIMGL", crate::packages::manimgl_dir(app).unwrap_or_default())
             .env_remove("PYTHONHOME")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -318,9 +318,12 @@ After changing a scene, call the manimpro render_scene tool to check it renders;
 Then call view_scene to look at a few frames (images) and fix anything that overlaps, runs off the frame or is hard to read; view_timeline shows the arranged video. \
 Break longer videos into several Scene classes, one idea each (5-20 seconds): for anything over about 15 seconds, first call outline_video with the plan, then write each scene, render each one, and finally call arrange_timeline with the scenes in play order. \
 Prefer splitting scenes across a few files grouped by section (e.g. intro.py, part1.py) when a video has many scenes. \
-When the user asks for narration or a voiceover, arrange the scenes first, then call generate_voiceover once per scene with that scene's start time from get_timeline (list_voices shows the voices). \
+For narration, prefer narrating inside the scene so speech and animation stay in sync: `from manimpro_voice import VoiceoverScene`, subclass VoiceoverScene (or VoiceoverThreeDScene / VoiceoverMovingCameraScene), and wrap animations in `with self.voiceover(\"text\") as v:` using `run_time=v.duration`, `v.remaining()`, or `<bookmark mark='name'/>` in the text with `v.time_until_bookmark('name')`; the block waits until the line ends. Use generate_voiceover on the audio track only for narration across several scenes. \
 Files the user attaches are listed at the end of their message; read them (images too) before you start. \
 Do not install packages, create virtual environments or run shell commands; if a scene needs a Python package that isn't available, tell the user to add it in Settings > Python packages. \
+Files that start with `from manimlib import *` render with ManimGL (3Blue1Brown's own version, if the user installed it in Settings); use ManimGL's API there (ShowCreation, InteractiveScene...), and Manim Community's everywhere else. \
+If the project has a BRIEF.md, read it first and follow its style (colors, fonts, tone, audience). \
+Use the manimpro manim_docs tool to check Manim signatures instead of guessing. \
 Data files and images in the project (csv, json, png...) can be read from a scene with paths relative to the scene file. Keep replies short: say what you changed.";
 
 #[tauri::command]
@@ -335,15 +338,26 @@ pub fn agent_run(
     session: Option<String>,
     instructions: Option<String>,
     files: Option<Vec<String>>,
+    web: Option<bool>,
+    local_files: Option<bool>,
 ) -> Result<u64, String> {
+    let web = web.unwrap_or(true);
+    let local = if local_files.unwrap_or(true) { "1" } else { "0" };
     let files = files.unwrap_or_default();
     let is_image = |f: &String| {
         let l = f.to_ascii_lowercase();
         [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| l.ends_with(e))
     };
+    let mut base = SYSTEM_PROMPT.to_string();
+    if web {
+        base.push_str(" You may search the web and read web pages for reference (Manim docs, facts, examples); say where facts came from.");
+    }
+    if local == "1" {
+        base.push_str(" To read files elsewhere on this computer, use the manimpro read_local_file and list_local_folder tools; copy anything a scene needs into the project with import_into_project.");
+    }
     let system = match instructions.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(extra) => format!("{SYSTEM_PROMPT}\n\nThe user's standing instructions:\n{extra}"),
-        None => SYSTEM_PROMPT.to_string(),
+        Some(extra) => format!("{base}\n\nThe user's standing instructions:\n{extra}"),
+        None => base,
     };
     let p = Provider::parse(&provider)?;
     let launch = resolve(p.exe_name()).ok_or("This assistant is not installed.")?;
@@ -362,7 +376,7 @@ pub fn agent_run(
         Provider::Claude => {
             let config = json!({ "mcpServers": { "manimpro": {
                 "command": python, "args": [server],
-                "env": { "MANIMPRO_BRIDGE": port.to_string(), "MANIMPRO_TOKEN": token }
+                "env": { "MANIMPRO_BRIDGE": port.to_string(), "MANIMPRO_TOKEN": token, "MANIMPRO_LOCAL_FILES": local }
             }}});
             let cfg_path = std::env::temp_dir().join(format!("manimpro-mcp-{port}.json"));
             std::fs::write(&cfg_path, config.to_string()).map_err(|e| e.to_string())?;
@@ -371,8 +385,11 @@ pub fn agent_run(
                 .arg("--mcp-config")
                 .arg(&cfg_path)
                 .arg("--strict-mcp-config")
-                .args(["--allowedTools", "Read,Edit,Write,Glob,Grep,mcp__manimpro"])
-                .args(["--disallowedTools", "Bash,WebFetch,WebSearch"])
+                .args([
+                    "--allowedTools",
+                    if web { "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__manimpro" } else { "Read,Edit,Write,Glob,Grep,mcp__manimpro" },
+                ])
+                .args(["--disallowedTools", if web { "Bash" } else { "Bash,WebFetch,WebSearch" }])
                 .arg("--append-system-prompt")
                 .arg(&system);
             if let Some(m) = &model {
@@ -395,8 +412,13 @@ pub fn agent_run(
                 .args(["-c", &format!("mcp_servers.manimpro.args=[\"{server}\"]")])
                 .args([
                     "-c",
-                    &format!("mcp_servers.manimpro.env={{MANIMPRO_BRIDGE=\"{port}\",MANIMPRO_TOKEN=\"{token}\"}}"),
+                    &format!(
+                        "mcp_servers.manimpro.env={{MANIMPRO_BRIDGE=\"{port}\",MANIMPRO_TOKEN=\"{token}\",MANIMPRO_LOCAL_FILES=\"{local}\"}}"
+                    ),
                 ]);
+            if web {
+                cmd.args(["-c", "tools.web_search=true"]);
+            }
             if let Some(m) = &model {
                 cmd.args(["-m", m]);
             }
@@ -417,10 +439,14 @@ pub fn agent_run(
             let config = json!({
                 "mcp": { "manimpro": {
                     "type": "local", "command": [python, server],
-                    "environment": { "MANIMPRO_BRIDGE": port.to_string(), "MANIMPRO_TOKEN": token }
+                    "environment": { "MANIMPRO_BRIDGE": port.to_string(), "MANIMPRO_TOKEN": token, "MANIMPRO_LOCAL_FILES": local }
                 }},
-                "permission": { "edit": "allow", "bash": "deny", "webfetch": "deny" }
+                "permission": { "edit": "allow", "bash": "deny", "webfetch": if web { "allow" } else { "deny" } }
             });
+            if web {
+                // OpenCode's web search tool is switched on by this variable.
+                cmd.env("OPENCODE_ENABLE_EXA", "1");
+            }
             cmd.env("OPENCODE_CONFIG_CONTENT", config.to_string());
             cmd.args(["run", "--format", "json", "--dir"]).arg(&project_dir);
             if let Some(m) = &model {

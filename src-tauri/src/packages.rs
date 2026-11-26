@@ -10,10 +10,19 @@ pub fn packages_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().app_local_data_dir().ok()?.join("python-packages"))
 }
 
+/// ManimGL lives in its own folder: its versions of NumPy, Pillow and ManimPango differ from Manim's.
+pub fn manimgl_dir(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_local_data_dir().ok()?.join("manimgl"))
+}
+
 async fn run(app: AppHandle, args: Vec<String>) -> Result<Value, String> {
+    let dir = packages_dir(&app).ok_or("No app data folder.")?;
+    run_in(app, dir, args).await
+}
+
+async fn run_in(app: AppHandle, dir: PathBuf, args: Vec<String>) -> Result<Value, String> {
     let paths = crate::worker::runtime_paths(&app);
     let tool = paths.script.with_file_name("pkgtool.py");
-    let dir = packages_dir(&app).ok_or("No app data folder.")?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut c = Command::new(&paths.python);
         c.arg("-I").arg(&tool).arg(&dir).args(&args).env("PYTHONUTF8", "1");
@@ -53,6 +62,43 @@ pub fn music_library(app: AppHandle) -> Result<Value, String> {
         }
     }
     Ok(lib)
+}
+
+/// Folder with the plugin starter scenes (next to the worker script).
+#[tauri::command]
+pub fn plugin_starters_dir(app: AppHandle) -> String {
+    crate::worker::runtime_paths(&app).script.with_file_name("plugin_starters").to_string_lossy().into_owned()
+}
+
+#[tauri::command]
+pub async fn manimgl_status(app: AppHandle) -> Result<Value, String> {
+    let dir = manimgl_dir(&app).ok_or("No app data folder.")?;
+    if !dir.join("manimlib").is_dir() {
+        return Ok(serde_json::json!({ "installed": false }));
+    }
+    let list = run_in(app, dir, vec!["list".into()]).await?;
+    let version = list
+        .get("packages")
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().find(|p| p.get("name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case("manimgl"))))
+        .and_then(|p| p.get("version").cloned());
+    Ok(serde_json::json!({ "installed": true, "version": version }))
+}
+
+#[tauri::command]
+pub async fn manimgl_install(app: AppHandle) -> Result<Value, String> {
+    let dir = manimgl_dir(&app).ok_or("No app data folder.")?;
+    // From GitHub (3Blue1Brown's current video code needs it), with setuptools < 81 for pkg_resources.
+    run_in(app, dir, vec!["install-manimgl".into()]).await
+}
+
+#[tauri::command]
+pub fn manimgl_remove(app: AppHandle) -> Result<(), String> {
+    let dir = manimgl_dir(&app).ok_or("No app data folder.")?;
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

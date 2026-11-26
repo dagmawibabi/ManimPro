@@ -42,6 +42,8 @@ export type Settings = {
   manimCompletions: boolean;
   stickyScroll: boolean;
   bracketColors: boolean;
+  /** Completions, hover docs, signatures and warnings from Python analysis (jedi, pyflakes). */
+  pythonHelp: boolean;
   showWhitespace: boolean;
   /** Save the open file shortly after typing stops (does not render). */
   autoSave: boolean;
@@ -50,6 +52,12 @@ export type Settings = {
   multiSceneByDefault: boolean;
   showToolDetails: boolean;
   extraInstructions: string;
+  /** Assistants may search the web and read pages. */
+  agentWeb: boolean;
+  /** Assistants may read files outside the project (through ManimPro's tools). */
+  agentLocalFiles: boolean;
+  /** Other apps (Claude Desktop, Cursor...) may use ManimPro's tools over MCP. */
+  shareMcp: boolean;
   // Rendering
   previewQuality: "fast" | "preview" | "draft" | "high";
   renderOnSave: boolean;
@@ -97,12 +105,16 @@ export const DEFAULTS: Settings = {
   manimCompletions: true,
   stickyScroll: true,
   bracketColors: true,
+  pythonHelp: true,
   showWhitespace: false,
   autoSave: false,
   autoRenderAfterAssistant: true,
   multiSceneByDefault: true,
   showToolDetails: true,
   extraInstructions: "",
+  agentWeb: true,
+  agentLocalFiles: true,
+  shareMcp: false,
   previewQuality: "preview",
   renderOnSave: true,
   disableCache: false,

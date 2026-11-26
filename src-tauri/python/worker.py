@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import tempfile
@@ -49,6 +50,35 @@ if _extra and os.path.isdir(_extra) and _extra not in sys.path:
     sys.path.append(_extra)
 
 from manim import Scene, config, tempconfig  # noqa: E402
+
+# Manim 0.22 dropped config.write_to_movie; plugins written for earlier versions (manim-slides)
+# still set it. Accept it and ignore it, so those plugins keep working.
+from manim._config.utils import ManimConfig  # noqa: E402
+
+if not hasattr(ManimConfig, "write_to_movie"):
+    ManimConfig.write_to_movie = property(lambda self: not getattr(self, "dry_run", False), lambda self, value: None)
+if not hasattr(ManimConfig, "flush_cache"):
+    # Removed in 0.22 as well; plugins only set it and read it back.
+    ManimConfig.flush_cache = property(lambda self: self.__dict__.get("_mp_flush_cache", False),
+                                       lambda self, value: self.__dict__.__setitem__("_mp_flush_cache", bool(value)))
+# Older Manim let an AnimationGroup be empty (it took no time); 0.22 raises. Plugins such as
+# ManimML still build empty groups, so give them a tiny no-op step instead.
+from manim import Animation, AnimationGroup, Mobject  # noqa: E402
+
+_ag_init = AnimationGroup.__init__
+
+
+def _ag_init_compat(self, *animations, **kwargs):
+    if not animations:
+        animations = (Animation(Mobject(), run_time=1e-3),)
+    _ag_init(self, *animations, **kwargs)
+
+
+AnimationGroup.__init__ = _ag_init_compat
+
+# Manim 0.22 only accepts -1 for "unlimited" partial-movie caching; older plugins pass infinity.
+_mfc = ManimConfig.max_files_cached
+ManimConfig.max_files_cached = property(_mfc.fget, lambda self, v: _mfc.fset(self, -1 if v == float("inf") else v))
 
 QUALITY = {
     "fast": "low_quality",  # 360p @12, see FAST below
@@ -208,6 +238,8 @@ def _user_error(exc: BaseException, path: str) -> dict:
             line = frame.lineno
     if isinstance(exc, SyntaxError) and exc.lineno:
         line = exc.lineno
+    if getattr(exc, "mp_line", None):
+        line = exc.mp_line
     message = f"{type(exc).__name__}: {exc}"
     # Tex/MathTex shell out to `latex`; without it Windows only says "file not found".
     frames = traceback.extract_tb(exc.__traceback__)
@@ -218,19 +250,189 @@ def _user_error(exc: BaseException, path: str) -> dict:
         )
     return {
         "message": message,
+        "action": getattr(exc, "mp_action", None),
         "latex_missing": message.startswith("LaTeX is not installed"),
         "line": line,
         "traceback": "".join(traceback.format_exception(exc)),
     }
 
 
+_GL_IMPORT = re.compile(r"^\s*(from\s+(manimlib|manim_imports_ext)\b|import\s+(manimlib|manim_imports_ext)\b)", re.M)
+_3B1B_IMPORT = re.compile(r"^\s*(from|import)\s+manim_imports_ext\b", re.M)
+SHARED_3B1B = "https://raw.githubusercontent.com/3b1b/videos/master/"
+SHARED_3B1B_API = "https://api.github.com/repos/3b1b/videos/contents/"
+
+
+def find_3b1b_root(path: str) -> Path | None:
+    """The folder with manim_imports_ext.py at or above a scene file (the top of a 3b1b/videos checkout)."""
+    p = Path(path).resolve().parent
+    for _ in range(8):
+        if (p / "manim_imports_ext.py").is_file():
+            return p
+        if p.parent == p:
+            break
+        p = p.parent
+    return None
+
+
+def m_fetch_3b1b_shared(params: dict) -> dict:
+    """Downloads manim_imports_ext.py, custom_config.yml and the custom/ package from 3b1b/videos into a folder,
+    so files from that repository can run. (Code only: about 100 KB.)"""
+    import urllib.request
+
+    dest = Path(params["dest"])
+    got: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        req = urllib.request.Request(url, headers={"User-Agent": "ManimPro"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read()
+
+    def walk(folder: str) -> None:
+        for item in json.loads(fetch(SHARED_3B1B_API + folder)):
+            if item["type"] == "dir":
+                walk(item["path"])
+            elif item["type"] == "file" and item["name"].endswith(".py"):
+                target = dest / item["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(fetch(SHARED_3B1B + item["path"]))
+                got.append(item["path"])
+
+    # custom_config.yml carries the look (font, colours) and the asset folder names the shared code expects;
+    # ManimPro overrides its machine-specific paths when rendering.
+    for name in ("manim_imports_ext.py", "custom_config.yml"):
+        (dest / name).write_bytes(fetch(SHARED_3B1B + name))
+        got.append(name)
+    walk("custom")
+    return {"files": got, "dest": str(dest)}
+GL_HEIGHT = {"fast": 360, "preview": 480, "draft": 720, "high": 1080, "1440p": 1440, "4k": 2160}
+GL_FPS = {"fast": 12, "preview": 15, "draft": 30, "high": 60, "1440p": 60, "4k": 60}
+
+
+def is_manimgl(path: str) -> bool:
+    try:
+        return bool(_GL_IMPORT.search(Path(path).read_text(encoding="utf-8")))
+    except OSError:
+        return False
+
+
+def _finish_render(params: dict, video: str, info: dict, result: dict) -> None:
+    """Thumbnails and the timeline filmstrip for a finished render."""
+    for key in ("thumb", "sceneThumb"):
+        if params.get(key):
+            try:
+                save_thumbnail(video, params[key], info["duration"] * 0.6)
+                if key == "sceneThumb":
+                    result["thumb"] = params[key]
+                    strip = params[key].replace(".jpg", "-strip.jpg")
+                    result["stripFrames"] = save_strip(video, strip, info["duration"])
+                    result["strip"] = strip
+            except Exception as exc:  # noqa: BLE001 - a thumbnail is never worth failing a render
+                print(f"thumbnail skipped: {exc}", file=sys.stderr)
+
+
+def m_render_gl(params: dict, job_id) -> dict:
+    """Renders a `from manimlib import *` scene with ManimGL, in its own Python process."""
+    gl = os.environ.get("MANIMPRO_MANIMGL", "")
+    if not gl or not os.path.isdir(os.path.join(gl, "manimlib")):
+        raise RuntimeError("This file uses ManimGL (from manimlib import *). Install ManimGL in Settings > Python packages to render it.")
+    path, scene_name = params["path"], params["scene"]
+    root = find_3b1b_root(path)
+    source = Path(path).read_text(encoding="utf-8", errors="replace")
+    if _3B1B_IMPORT.search(source) and root is None:
+        err = RuntimeError(
+            "This file is from 3Blue1Brown's videos repository. It imports manim_imports_ext, which lives at the top of "
+            "that repository with a custom/ folder of shared code. Get 3Blue1Brown's shared code (about 100 KB) to run it, "
+            "or open the whole cloned repository as the project."
+        )
+        err.mp_action = "fetch_3b1b"
+        raise err
+    q = params.get("quality", "preview")
+    short = GL_HEIGHT.get(q, 480)
+    aw, ah = (params.get("aspect") or [16, 9])
+    even = lambda v: int(round(v / 2)) * 2
+    w, h = (even(short * aw / ah), short) if aw >= ah else (short, even(short * ah / aw))
+    out_dir = Path(params["mediaDir"]) / "videos_gl" / Path(path).stem / f"{h}p{GL_FPS.get(q, 15)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="manimpro-gl-"))
+    bg = params.get("background") or "#000000"
+    cfg = (f'file_writer:\n  ffmpeg_bin: "{ffmpeg_exe().replace(chr(92), "/")}"\n'
+           f'camera:\n  background_color: "{bg}"\n  fps: {GL_FPS.get(q, 15)}\n')
+    if root is not None:
+        # 3b1b's custom_config.yml points at Grant's own folders; keep assets inside this checkout instead
+        # (images/raster, images/vector, images/pi_creature/svg...).
+        cfg += (f'directories:\n  mirror_module_path: False\n  removed_mirror_prefix: ""\n'
+                f'  base: "{str(root).replace(chr(92), "/")}"\n')
+    (work / "manimpro.yml").write_text(cfg, encoding="utf-8")
+    args = [sys.executable, "-m", "manimlib", path, scene_name, "-w", "-q", "-r", f"{w}x{h}",
+            "--video_dir", str(out_dir), "--file_name", scene_name, "--config_file", str(work / "manimpro.yml")]
+    if params.get("transparent"):
+        args.append("-t")
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([gl] + ([str(root)] if root else [])), PYTHONWARNINGS="ignore")
+    flags = 0x08000000 if os.name == "nt" else 0
+    proc = subprocess.run(args, cwd=str(root or Path(path).parent), env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", creationflags=flags)
+    gl_notes = []
+    # Pango reports a missing font straight to the console, so check the font the repo's config asks for.
+    cfg_file = (root / "custom_config.yml") if root else None
+    if cfg_file and cfg_file.is_file():
+        m = re.search(r'^text:\s*\n(?:[ \t]+.*\n)*?[ \t]+font:\s*"?([^"\n]+)"?', cfg_file.read_text(encoding="utf-8", errors="replace"), re.M)
+        if m:
+            try:
+                import manimpango
+
+                wanted = m.group(1).strip()
+                if wanted.lower() not in {f.lower() for f in manimpango.list_fonts()}:
+                    gl_notes.append(f"Text asks for the font {wanted}, which isn't installed, so a fallback font was used. "
+                                    "Install it in Windows to match the original look.")
+            except Exception:  # noqa: BLE001 - only a hint
+                pass
+    shutil.rmtree(work, ignore_errors=True)
+    video = out_dir / (scene_name + (".mov" if params.get("transparent") else ".mp4"))
+    if proc.returncode != 0 or not video.exists():
+        tail = [l for l in (proc.stderr or proc.stdout).strip().splitlines() if l.strip()]
+        line = None
+        for l in tail:
+            m = re.search(r'File "([^"]+)", line (\d+)', l)
+            if m and os.path.normcase(os.path.abspath(m.group(1))) == os.path.normcase(os.path.abspath(path)):
+                line = int(m.group(2))
+        last = tail[-1] if tail else "ManimGL could not render this scene."
+        if "pi_creature" in last and "not Found" in last:
+            last = ("This scene uses 3Blue1Brown's Pi creatures. Their artwork isn't public (it lives in 3Blue1Brown's own files, "
+                    "not the GitHub repository), so scenes with Pi creatures (TeacherStudentsScene, PiCreatureScene...) can't render. "
+                    "If you have the SVGs, put them in images/pi_creature/svg at the top of the repository.")
+        elif "not Found" in last and ("images" in last or "raster" in last or "vector" in last):
+            last = ("This scene needs an image that isn't in the repository (3Blue1Brown keeps those in his own files): "
+                    + last.split(": ", 1)[-1])
+        err = RuntimeError(last + " (ManimGL)")
+        err.mp_line = line  # picked up by _user_error
+        err.mp_trace = "\n".join(tail[-30:])
+        raise err
+    _gl_notes[:] = gl_notes
+    return str(video)
+
+
+_gl_notes: list[str] = []
+
+
 def m_render(params: dict, job_id) -> dict:
     path = params["path"]
+    if is_manimgl(path):
+        video = m_render_gl(params, job_id)
+        info = probe(video)
+        result = {"video": video, **info, "narration": [], "engine": "manimgl"}
+        if _gl_notes:
+            result["warning"] = _gl_notes[0]
+        _finish_render(params, video, info, result)
+        return result
     scene_name = params["scene"]
     quality = QUALITY.get(params.get("quality", "preview"), "low_quality")
     still = bool(params.get("still", False))
     media_dir = params["mediaDir"]
 
+    import manimpro_voice
+
+    manimpro_voice.configure(params.get("project"), params.get("elevenKey"), params.get("voiceId"), params.get("voiceModel"))
     with _InFolder(path):
         module = _load_module(path)
     cls = getattr(module, scene_name, None)
@@ -276,6 +478,8 @@ def m_render(params: dict, job_id) -> dict:
             overrides["frame_height"] = 8.0 / ratio
     if params.get("quality") == "fast":
         overrides["frame_rate"] = 12
+    if params.get("transparent"):
+        overrides["transparent"] = True  # writes a .mov with an alpha channel
     # A scene that sets self.camera.background_color itself still wins.
     if params.get("background"):
         overrides["background_color"] = params["background"]
@@ -304,17 +508,11 @@ def m_render(params: dict, job_id) -> dict:
     info = probe(video)
     # A project thumbnail (home page) and a per-scene one (project panel).
     result = {"video": video, **info}
-    for key in ("thumb", "sceneThumb"):
-        if params.get(key):
-            try:
-                save_thumbnail(video, params[key], info["duration"] * 0.6)
-                if key == "sceneThumb":
-                    result["thumb"] = params[key]
-                    strip = params[key].replace(".jpg", "-strip.jpg")
-                    result["stripFrames"] = save_strip(video, strip, info["duration"])
-                    result["strip"] = strip
-            except Exception as exc:  # noqa: BLE001 - a thumbnail is never worth failing a render
-                print(f"thumbnail skipped: {exc}", file=sys.stderr)
+    # Lines spoken with self.voiceover(...): for captions, plus a note if they were silent.
+    result["narration"] = [dict(x) for x in manimpro_voice.spoken]
+    if manimpro_voice.warnings:
+        result["warning"] = manimpro_voice.warnings[0]
+    _finish_render(params, video, info, result)
     return result
 
 
@@ -417,23 +615,32 @@ def m_export(params: dict, job_id) -> dict:
         raise RuntimeError("The timeline is empty. Add a scene before exporting.")
 
     def length(c):
-        return c["out"] - c["in"]
+        # Seconds on the timeline: the source span divided by the playback speed.
+        return (c["out"] - c["in"]) / float(c.get("speed") or 1)
 
     total = max([float(params.get("total") or 0)] + [c["start"] + length(c) for c in clips])
     args = [ffmpeg_exe(), "-y", "-hide_banner", "-nostdin"]
     # A black canvas the length of the timeline; every clip is laid over it at its start time,
     # so gaps stay black and transitions can overlap neighbouring clips.
-    args += ["-f", "lavfi", "-t", f"{total:.4f}", "-i", f"color=c=black:s={w}x{h}:r={fps}"]
+    alpha = bool(params.get("transparent")) and fmt in ("mov", "webm")
+    canvas = f"color=c=black@0.0:s={w}x{h}:r={fps},format=rgba" if alpha else f"color=c=black:s={w}x{h}:r={fps}"
+    args += ["-f", "lavfi", "-t", f"{total:.4f}", "-i", canvas]
     filters = ["[0:v]format=yuva420p[base]"]
     below = "[base]"
     idx = 1
+    clip_inputs: list[tuple[int, dict]] = []
     for i, c in enumerate(clips):
         prev = clips[i - 1] if i else None
         nxt = clips[i + 1] if i + 1 < len(clips) else None
         L = length(c)
-        args += ["-i", c["path"]]
+        if c.get("image"):
+            # A photo: loop the single frame for as long as the clip lasts.
+            args += ["-loop", "1", "-framerate", str(fps), "-t", f"{c['out'] + 0.1:.4f}", "-i", c["path"]]
+        else:
+            args += ["-i", c["path"]]
+            clip_inputs.append((idx, c))
         chain = (
-            f"[{idx}:v]trim=start={c['in']:.4f}:end={c['out']:.4f},setpts=PTS-STARTPTS,"
+            f"[{idx}:v]trim=start={c['in']:.4f}:end={c['out']:.4f},setpts=(PTS-STARTPTS)/{float(c.get('speed') or 1):.4f},"
             f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,fps={fps},format=yuva420p"
         )
@@ -460,7 +667,7 @@ def m_export(params: dict, job_id) -> dict:
     captions = [c for c in params.get("captions") or [] if c.get("text", "").strip() and c["end"] > c["start"]]
     srt_text = _srt(captions)
     work = tempfile.mkdtemp(prefix="manimpro-export-")
-    finish = f"{below}format=yuv420p"
+    finish = f"{below}format=" + ("yuva444p10le" if alpha and fmt == "mov" else "yuva420p" if alpha else "yuv420p")
     if captions and params.get("burnCaptions"):
         Path(work, "captions.srt").write_text(srt_text, encoding="utf-8")
         size = max(14, round(h / 22))
@@ -477,6 +684,27 @@ def m_export(params: dict, job_id) -> dict:
     audio_fmt = fmt in ("mp4", "webm", "mov")
     audio = [a for a in params.get("audio", []) if a["start"] < total] if audio_fmt else []
     amix = []
+    if audio_fmt:
+        # Sound inside the clips themselves: narration from self.voiceover(...), or a video's own audio.
+        for cidx, c in clip_inputs:
+            if not _has_audio(c["path"]):
+                continue
+            sp = float(c.get("speed") or 1)
+            tempo = ""
+            while sp > 2.0:
+                tempo += "atempo=2.0,"
+                sp /= 2.0
+            while sp < 0.5:
+                tempo += "atempo=0.5,"
+                sp /= 0.5
+            if abs(sp - 1) > 1e-3:
+                tempo += f"atempo={sp:.4f},"
+            delay = int(round(c["start"] * 1000))
+            graph += (
+                f";[{cidx}:a]atrim=start={c['in']:.4f}:end={c['out']:.4f},asetpts=PTS-STARTPTS,{tempo}"
+                f"aresample=48000,aformat=channel_layouts=stereo,adelay=delays={delay}:all=1[ca{cidx}]"
+            )
+            amix.append(f"[ca{cidx}]")
     for a in audio:
         args.extend(["-i", a["path"]])
         delay = int(round(a["start"] * 1000))
@@ -498,8 +726,10 @@ def m_export(params: dict, job_id) -> dict:
     codec = {
         "mp4": ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         "webm": ["-c:v", "libvpx-vp9", "-crf", str(min(63, crf + 12)), "-b:v", "0", "-row-mt", "1",
-                 "-deadline", "good", "-cpu-used", "4", "-pix_fmt", "yuv420p"],
-        "mov": ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"],
+                 "-deadline", "good", "-cpu-used", "4", "-pix_fmt", "yuva420p" if alpha else "yuv420p",
+                 *(["-auto-alt-ref", "0"] if alpha else [])],
+        "mov": (["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-alpha_bits", "16"] if alpha
+                else ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"]),
         "gif": ["-loop", "0"],
         "png": ["-c:v", "png"],
     }[fmt]
@@ -534,6 +764,16 @@ def m_export(params: dict, job_id) -> dict:
     return {"output": out, "duration": total, "srt": srt_path}
 
 
+def _has_audio(path: str) -> bool:
+    import av
+
+    try:
+        with av.open(path) as c:
+            return any(s.type == "audio" for s in c.streams)
+    except Exception:  # noqa: BLE001 - an unreadable file just has no usable sound
+        return False
+
+
 def _srt(captions: list[dict]) -> str:
     def ts(t: float) -> str:
         ms = int(round(max(0.0, t) * 1000))
@@ -546,7 +786,30 @@ def _srt(captions: list[dict]) -> str:
 
 
 # --- Dispatch ----------------------------------------------------------------
-QUICK = {"ping": m_ping, "list_scenes": m_list_scenes, "audio_info": m_audio_info}
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+
+
+def m_media_info(params: dict) -> dict:
+    """Size and length of a photo or video the user put on the timeline."""
+    path = params["path"]
+    if path.lower().endswith(IMAGE_EXT) and not path.lower().endswith(".gif"):
+        from PIL import Image
+
+        with Image.open(path) as im:
+            return {"kind": "image", "width": im.width, "height": im.height, "duration": None, "hasAudio": False}
+    import av
+
+    with av.open(path) as c:
+        v = next((s for s in c.streams if s.type == "video"), None)
+        if v is None:
+            raise RuntimeError("That file has no picture to show.")
+        duration = float(c.duration / 1_000_000) if c.duration else float(v.duration * v.time_base) if v.duration else 0.0
+        return {"kind": "video", "width": v.codec_context.width, "height": v.codec_context.height,
+                "duration": duration, "hasAudio": any(s.type == "audio" for s in c.streams)}
+
+
+QUICK = {"ping": m_ping, "list_scenes": m_list_scenes, "audio_info": m_audio_info, "media_info": m_media_info,
+         "fetch_3b1b_shared": m_fetch_3b1b_shared}
 JOBS = {"render": m_render, "export": m_export}
 jobs: "queue.Queue[dict]" = queue.Queue()
 
@@ -563,8 +826,33 @@ def job_loop() -> None:
             _current_job["id"] = None
 
 
+import lsp  # noqa: E402
+
+LSP_METHODS = lsp.METHODS
+lsp_jobs: "queue.Queue[dict]" = queue.Queue()
+_lsp_latest: dict[str, int] = {}
+_lsp_lock = threading.Lock()
+
+
+def lsp_loop() -> None:
+    lsp.warm_up()
+    while True:
+        msg = lsp_jobs.get()
+        method = msg["method"]
+        with _lsp_lock:
+            stale = _lsp_latest.get(method) != msg["id"]
+        if stale:
+            send({"id": msg["id"], "result": {}})
+            continue
+        try:
+            send({"id": msg["id"], "result": LSP_METHODS[method](msg.get("params") or {})})
+        except Exception as exc:  # noqa: BLE001 - analysis of half-typed code fails often
+            send({"id": msg["id"], "result": {"error": str(exc)}})
+
+
 def main() -> None:
     threading.Thread(target=job_loop, daemon=True).start()
+    threading.Thread(target=lsp_loop, daemon=True).start()
     event("ready", manim=manim.__version__)
     for raw in sys.stdin:
         raw = raw.strip()
@@ -577,6 +865,11 @@ def main() -> None:
         method = msg.get("method")
         if method in JOBS:
             jobs.put(msg)
+        elif method in LSP_METHODS:
+            # Newest request of each kind wins; older ones still waiting get an empty answer.
+            with _lsp_lock:
+                _lsp_latest[method] = msg["id"]
+            lsp_jobs.put(msg)
         elif method in QUICK:
             try:
                 send({"id": msg["id"], "result": QUICK[method](msg.get("params") or {})})

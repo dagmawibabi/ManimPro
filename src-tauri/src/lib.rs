@@ -1,4 +1,5 @@
 mod agents;
+mod archive;
 mod bridge;
 mod catalog;
 mod checkpoints;
@@ -318,8 +319,13 @@ async fn worker_call(
     app: AppHandle,
     worker: State<'_, Worker>,
     method: String,
-    params: Value,
+    mut params: Value,
 ) -> Result<Value, Value> {
+    if method == "render" {
+        if let (Some(key), Some(obj)) = (catalog::api_key("elevenlabs"), params.as_object_mut()) {
+            obj.insert("elevenKey".into(), Value::String(key));
+        }
+    }
     worker.call(&app, &method, params).await
 }
 
@@ -353,6 +359,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 window.app_handle().state::<Worker>().stop();
+                if let Some(f) = bridge::share_file() {
+                    let _ = std::fs::remove_file(f); // other apps can't reach a closed ManimPro
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -377,11 +386,21 @@ pub fn run() {
             projects::rename_project,
             projects::delete_project,
             projects::get_projects_root,
+            archive::export_project_zip,
+            projects::save_user_template,
+            projects::list_user_templates,
+            projects::delete_user_template,
+            archive::import_project_zip,
             checkpoints::checkpoint_create,
             checkpoints::checkpoint_changes,
             checkpoints::checkpoint_restore,
             packages::packages_list,
             packages::music_library,
+            packages::plugin_starters_dir,
+            packages::manimgl_status,
+            packages::manimgl_install,
+            packages::manimgl_remove,
+            bridge::mcp_share,
             packages::packages_install,
             packages::packages_remove,
             projects::set_projects_root,

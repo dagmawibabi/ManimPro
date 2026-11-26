@@ -20,6 +20,25 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 
 PORT = int(os.environ.get("MANIMPRO_BRIDGE", "0"))
 TOKEN = os.environ.get("MANIMPRO_TOKEN", "")
+# Started by another app (Claude Desktop, Cursor, Claude Code...) instead of by ManimPro:
+# the running app publishes its address in a file when "Let other apps use ManimPro" is on.
+SHARE_FILE = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "dev.manimpro.app", "bridge.json")
+EXTERNAL = not PORT
+LOCAL_FILES = os.environ.get("MANIMPRO_LOCAL_FILES") == "1"
+
+
+def _load_share() -> None:
+    global PORT, TOKEN
+    try:
+        with open(SHARE_FILE, encoding="utf-8") as f:
+            info = json.load(f)
+        PORT, TOKEN = int(info["port"]), str(info["token"])
+    except (OSError, ValueError, KeyError):
+        PORT, TOKEN = 0, ""
+
+
+if EXTERNAL:
+    _load_share()
 
 TOOLS = [
     {
@@ -187,6 +206,183 @@ TOOLS = [
         },
     },
     {
+        "name": "remove_audio",
+        "description": "Remove the audio clip (music or voiceover) at the given 0-based index from the timeline (see get_timeline's audio list). The audio file stays in the project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"index": {"type": "integer", "minimum": 0}},
+            "required": ["index"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "clear_audio",
+        "description": "Remove every clip from the audio track (the files stay in the project).",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "set_clip_speed",
+        "description": (
+            "Change how fast a video clip plays: 2 is twice as fast (half as long on the timeline), 0.5 is half speed. "
+            "Clips after it move to make room. Use get_timeline for indexes; 1 resets to normal."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "minimum": 0},
+                "speed": {"type": "number", "minimum": 0.25, "maximum": 4},
+            },
+            "required": ["index", "speed"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_captions",
+        "description": "List the captions on the timeline (index, start, end, text).",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "generate_captions",
+        "description": "Make captions from the narration: voiceovers on the audio track and self.voiceover(...) lines inside scenes. Replaces captions made this way before; hand-written ones stay.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "set_captions",
+        "description": "Replace all captions with this list (seconds on the timeline). Use [] to remove them all. Keep each to one or two short lines.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"captions": {"type": "array", "items": {"type": "object", "properties": {
+                "start": {"type": "number"}, "end": {"type": "number"}, "text": {"type": "string"}}, "required": ["start", "end", "text"]}}},
+            "required": ["captions"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "set_transition",
+        "description": "Set how a video clip comes in from the one before it: 'fade' (through black), 'crossfade' (clips must touch) or 'none'. Index from get_timeline.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "minimum": 0},
+                "kind": {"type": "string", "enum": ["none", "fade", "crossfade"]},
+                "duration": {"type": "number", "minimum": 0.1, "maximum": 3, "description": "Seconds (default 0.6)"},
+            },
+            "required": ["index", "kind"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "set_frame_shape",
+        "description": "Change the project's frame shape (16:9, 9:16 for Shorts/Reels, 1:1, 4:5, 4:3, 21:9). Scenes are re-rendered. Lay scenes out for the new shape afterwards.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"aspect": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:5", "4:3", "21:9"]}},
+            "required": ["aspect"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "export_video",
+        "description": (
+            "Export the timeline (or one scene) to a file. Renders every scene again at the chosen quality, so it can take a few minutes. "
+            "Returns the file path. Only export when the user asks for it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "format": {"type": "string", "enum": ["mp4", "webm", "mov", "gif", "png"], "description": "Default mp4"},
+                "resolution": {"type": "string", "enum": ["draft", "high", "1440p", "4k"], "description": "720p, 1080p, 1440p or 4K (default high)"},
+                "captions": {"type": "string", "enum": ["off", "srt", "burn"], "description": "Subtitle file, burned in, or none (default srt when there are captions)"},
+                "transparent": {"type": "boolean", "description": "Transparent background (mov or webm only)"},
+                "file": {"type": "string", "description": "Export just this scene: its file name..."},
+                "scene": {"type": "string", "description": "...and Scene class"},
+                "output": {"type": "string", "description": "Where to save (default: the project folder)"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_music",
+        "description": "The built-in music library: original tracks, free for any use (CC0), with mood, tempo and length.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "add_music",
+        "description": "Put a music library track on the audio track (copied into the project).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Track id from list_music"},
+                "start": {"type": "number", "description": "Seconds on the timeline (default 0)"},
+                "volume": {"type": "number", "minimum": 0, "maximum": 2, "description": "1 is normal; about 0.3 sits well under narration"},
+            },
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "add_media_to_timeline",
+        "description": "Put the user's own photo or video on the video track. Path is absolute, or relative to the project. Photos last `seconds` (default 4).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start": {"type": "number", "description": "Seconds on the timeline (default: the end)"},
+                "seconds": {"type": "number", "minimum": 0.5, "description": "How long a photo stays up"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_python_packages",
+        "description": "Extra Python packages installed for scenes (Settings > Python packages), and whether ManimGL is installed.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "install_python_package",
+        "description": "Ask the user to install a package from PyPI for scenes (e.g. networkx, manim-slides). The user sees a confirmation and can say no. Don't use pip or shell commands yourself.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Package name, optionally with a version"},
+                           "reason": {"type": "string", "description": "One sentence on why the scene needs it"}},
+            "required": ["name", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "export_project_zip",
+        "description": "Save the whole project (code, assets, timeline) as a .zip next to the project folder, for sharing or backup. Renders are left out unless include_renders is true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"include_renders": {"type": "boolean"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "save_as_template",
+        "description": "Save this project as one of the user's own templates, so new projects can start from it (home page > Your templates).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "description": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "manim_docs",
+        "description": (
+            "Look up Manim Community's own documentation for a class, function or constant (offline, matches the installed version): "
+            "signature and docstring. Use it before guessing an argument name. Accepts partial names like 'axes plot' or 'Transform'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "clear_timeline",
         "description": "Remove every clip from the video track (audio is kept).",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -200,10 +396,17 @@ _next = 0
 
 def app_call(tool: str, args: dict) -> dict:
     global _sock, _reader, _next
+    if EXTERNAL and _sock is None:
+        _load_share()  # ManimPro may have restarted on a new port
     if not PORT:
+        if EXTERNAL:
+            return {"ok": False, "error": "ManimPro isn't open, or 'Let other apps use ManimPro' is off in its Settings > Assistant. Open ManimPro with a project, then try again."}
         return {"ok": False, "error": "ManimPro is not running (no bridge port)."}
     if _sock is None:
-        _sock = socket.create_connection(("127.0.0.1", PORT), timeout=660)
+        try:
+            _sock = socket.create_connection(("127.0.0.1", PORT), timeout=660)
+        except OSError:
+            return {"ok": False, "error": "Could not reach ManimPro. Make sure it is open with a project."}
         _reader = _sock.makefile("r", encoding="utf-8")
     _next += 1
     msg = {"token": TOKEN, "id": _next, "tool": tool, "args": args}
@@ -216,6 +419,142 @@ def app_call(tool: str, args: dict) -> dict:
     if "error" in reply:
         return {"ok": False, "error": reply["error"]}
     return reply.get("result", {})
+
+
+_manim_index = None
+
+
+def manim_docs(args: dict) -> list[dict]:
+    """Signature and docstring of the best matches for a query, from the installed Manim."""
+    global _manim_index
+    import inspect
+    import re
+
+    if _manim_index is None:
+        import manim
+
+        _manim_index = {}
+        for name in dir(manim):
+            if name.startswith("_"):
+                continue
+            obj = getattr(manim, name)
+            _manim_index[name] = obj
+            if inspect.isclass(obj):
+                # Inherited methods too (Axes.plot lives on CoordinateSystem).
+                for meth in dir(obj):
+                    if meth.startswith("_"):
+                        continue
+                    fn = getattr(obj, meth, None)
+                    if callable(fn):
+                        _manim_index.setdefault(f"{name}.{meth}", fn)
+    words = [w for w in re.split(r"[\s.]+", str(args.get("query", "")).lower()) if w]
+    if not words:
+        return [{"type": "text", "text": "Give a name to look up, e.g. Axes.plot or Transform."}]
+
+    def score(key: str) -> int:
+        k = key.lower()
+        if k == ".".join(words) or k == words[-1]:
+            return 100
+        hits = sum(w in k for w in words)
+        return hits * 10 - len(k) // 10 if hits == len(words) else 0
+
+    best = sorted((k for k in _manim_index if score(k) > 0), key=score, reverse=True)[:4]
+    if not best:
+        return [{"type": "text", "text": f"Nothing in Manim matches {args.get('query')!r}."}]
+    out = []
+    for key in best:
+        obj = _manim_index[key]
+        try:
+            sig = str(inspect.signature(obj.__init__ if inspect.isclass(obj) else obj))
+        except (TypeError, ValueError):
+            sig = ""
+        doc = inspect.getdoc(obj) or "(no description)"
+        out.append(f"## {key}{sig}\n{doc[:2500]}")
+    return [{"type": "text", "text": "\n\n".join(out)}]
+
+
+LOCAL_TOOLS = [
+    {
+        "name": "read_local_file",
+        "description": (
+            "Read a file anywhere on this computer by absolute path (notes, data, code, images). Text comes back as text "
+            "(up to max_chars); images come back as a picture you can see. Use import_into_project to copy a file a scene needs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path, e.g. C:/Users/me/Documents/notes.md"},
+                "max_chars": {"type": "integer", "minimum": 1000, "maximum": 400000},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_local_folder",
+        "description": "List the files and folders in a folder on this computer (absolute path), with sizes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "import_into_project",
+        "description": "Copy a file from elsewhere on this computer into the project (e.g. an image or CSV a scene should use). Returns its new path in the project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path of the file to copy"},
+                "folder": {"type": "string", "description": "Project subfolder to copy into (optional, default the project root)"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+]
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+def read_local_file(args: dict) -> list[dict]:
+    import base64
+    import io
+
+    path = os.path.expandvars(os.path.expanduser(str(args.get("path", ""))))
+    if not os.path.isabs(path) or not os.path.isfile(path):
+        return [{"type": "text", "text": f"No file at {path} (give an absolute path)."}]
+    if path.lower().endswith(IMAGE_EXT):
+        from PIL import Image
+
+        img = Image.open(path)
+        img.thumbnail((1600, 1600))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return [{"type": "text", "text": f"{path} ({img.width}x{img.height})"},
+                {"type": "image", "data": base64.b64encode(buf.getvalue()).decode("ascii"), "mimeType": "image/jpeg"}]
+    limit = int(args.get("max_chars") or 100000)
+    with open(path, "rb") as f:
+        raw = f.read(limit * 4 + 1)
+    if b"\x00" in raw[:4096]:
+        return [{"type": "text", "text": f"{path} looks like a binary file ({os.path.getsize(path):,} bytes); it can't be shown as text."}]
+    text = raw.decode("utf-8", errors="replace")
+    more = len(text) > limit or os.path.getsize(path) > len(raw)
+    return [{"type": "text", "text": text[:limit] + (f"\n\n[... cut at {limit:,} characters]" if more else "")}]
+
+
+def list_local_folder(args: dict) -> list[dict]:
+    path = os.path.expandvars(os.path.expanduser(str(args.get("path", ""))))
+    if not os.path.isabs(path) or not os.path.isdir(path):
+        return [{"type": "text", "text": f"No folder at {path} (give an absolute path)."}]
+    rows = []
+    with os.scandir(path) as it:
+        for e in sorted(it, key=lambda e: (not e.is_dir(), e.name.lower()))[:500]:
+            try:
+                rows.append(f"{e.name}/" if e.is_dir() else f"{e.name}  ({e.stat().st_size:,} bytes)")
+            except OSError:
+                continue
+    return [{"type": "text", "text": f"{path}\n" + ("\n".join(rows) or "(empty)")}]
 
 
 MAX_FRAMES = 8
@@ -318,16 +657,29 @@ def handle(msg: dict) -> None:
             "protocolVersion": version,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "manimpro", "version": "0.2.0"},
-            "instructions": "Tools for the ManimPro video editor: render scenes and arrange the timeline.",
+            "instructions": "Tools for the ManimPro video editor (the project open in the app): list and render scenes, look at frames, arrange the timeline, voiceovers, captions-ready narration. Scene files live in the project folder; get it from list_scenes.",
         })
     elif method == "ping":
         respond(req_id, {})
     elif method == "tools/list":
-        respond(req_id, {"tools": TOOLS})
+        respond(req_id, {"tools": TOOLS + (LOCAL_TOOLS if LOCAL_FILES else [])})
     elif method == "tools/call":
         params = msg.get("params") or {}
         name = params.get("name")
-        if name not in {t["name"] for t in TOOLS}:
+        if name == "manim_docs":
+            try:
+                respond(req_id, {"content": manim_docs(params.get("arguments") or {}), "isError": False})
+            except Exception as exc:  # noqa: BLE001
+                respond(req_id, {"content": [{"type": "text", "text": f"Lookup failed: {exc}"}], "isError": True})
+            return
+        if LOCAL_FILES and name in ("read_local_file", "list_local_folder"):
+            try:
+                content = (read_local_file if name == "read_local_file" else list_local_folder)(params.get("arguments") or {})
+                respond(req_id, {"content": content, "isError": False})
+            except Exception as exc:  # noqa: BLE001
+                respond(req_id, {"content": [{"type": "text", "text": f"Could not read it: {exc}"}], "isError": True})
+            return
+        if name not in {t["name"] for t in TOOLS + (LOCAL_TOOLS if LOCAL_FILES else [])}:
             respond(req_id, error={"code": -32602, "message": f"Unknown tool {name}"})
             return
         if name in ("view_scene", "view_timeline"):

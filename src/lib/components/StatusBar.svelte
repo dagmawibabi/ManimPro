@@ -32,6 +32,13 @@
 
 <footer>
   <span class="status {status.tone}"><span class="led"></span>{status.text}</span>
+  {#if studio.notice}
+    <span class="notice" title={studio.notice}>{studio.notice}</span>
+    <button class="dismiss" aria-label="Dismiss" onclick={() => (studio.notice = null)}>×</button>
+  {:else if studio.definitionHint}
+    <span class="notice" title="Defined in Manim's own code">Defined in {studio.definitionHint}</span>
+    <button class="dismiss" aria-label="Dismiss" onclick={() => (studio.definitionHint = null)}>×</button>
+  {/if}
   <span class="spacer"></span>
   {#if studio.worker.status === "ready" && !studio.worker.latex}
     <button class="log-btn" class:on={studio.worker.latex} onclick={() => (ui.latexOpen = true)} title="LaTeX lets MathTex and Tex render">
@@ -45,6 +52,18 @@
 </footer>
 
 <style>
+  .notice {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #f1c26b;
+  }
+  .dismiss {
+    color: var(--faint);
+    font-size: 14px;
+    line-height: 1;
+  }
   footer {
     display: flex;
     align-items: center;

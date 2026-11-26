@@ -7,6 +7,13 @@ export const MANIM_COMPLETIONS: [string, Kind, string, string?][] = [
   ["self.wait", "Method", "Pause", "self.wait(${1:1})"],
   ["self.add", "Method", "Add without animation", "self.add(${0})"],
   ["self.next_section", "Method", "Start a new section", 'self.next_section("${1:name}")'],
+  [
+    "voiceover",
+    "Snippet",
+    "Narrated scene (stays in sync)",
+    "from manimpro_voice import VoiceoverScene\n\n\nclass ${1:Narrated}(VoiceoverScene):\n    def construct(self):\n        with self.voiceover(\"${2:What this part says.}\") as v:\n            ${0:self.play(Create(Circle()), run_time=v.duration)}",
+  ],
+  ["with self.voiceover", "Snippet", "Speak a line while animating", 'with self.voiceover("${1:text}") as v:\n    ${0:self.play(..., run_time=v.duration)}'],
   // Scenes
   ...(["Scene", "MovingCameraScene", "ThreeDScene", "ZoomedScene"] as const).map(
     (n) => [n, "Class", "Scene type"] as [string, Kind, string],

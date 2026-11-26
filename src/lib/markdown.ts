@@ -2,8 +2,55 @@
 import { Marked } from "marked";
 import katex from "katex";
 import DOMPurify from "dompurify";
+import hljs from "highlight.js/lib/core";
+import python from "highlight.js/lib/languages/python";
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import json from "highlight.js/lib/languages/json";
+import bash from "highlight.js/lib/languages/bash";
+import powershell from "highlight.js/lib/languages/powershell";
+import yaml from "highlight.js/lib/languages/yaml";
+import xml from "highlight.js/lib/languages/xml";
+import css from "highlight.js/lib/languages/css";
+import latex from "highlight.js/lib/languages/latex";
+import ini from "highlight.js/lib/languages/ini";
+import plaintext from "highlight.js/lib/languages/plaintext";
 
-const marked = new Marked({ gfm: true, breaks: true });
+for (const [name, lang] of Object.entries({ python, javascript, typescript, json, bash, powershell, yaml, xml, css, latex, ini, plaintext })) {
+  hljs.registerLanguage(name, lang);
+}
+hljs.registerAliases(["py", "python3"], { languageName: "python" });
+hljs.registerAliases(["js"], { languageName: "javascript" });
+hljs.registerAliases(["ts"], { languageName: "typescript" });
+hljs.registerAliases(["sh", "shell", "console"], { languageName: "bash" });
+hljs.registerAliases(["ps", "ps1", "pwsh"], { languageName: "powershell" });
+hljs.registerAliases(["yml"], { languageName: "yaml" });
+hljs.registerAliases(["html", "svg"], { languageName: "xml" });
+hljs.registerAliases(["tex"], { languageName: "latex" });
+hljs.registerAliases(["toml", "cfg"], { languageName: "ini" });
+hljs.registerAliases(["text", "txt"], { languageName: "plaintext" });
+
+/** Highlights a code block; unlabelled blocks are guessed among the languages above (Manim code is Python). */
+function highlight(code: string, lang?: string): { html: string; lang: string } {
+  const want = (lang ?? "").trim().split(/\s+/)[0].toLowerCase();
+  if (want && hljs.getLanguage(want)) {
+    const r = hljs.highlight(code, { language: want, ignoreIllegals: true });
+    return { html: r.value, lang: hljs.getLanguage(want)?.name ?? want };
+  }
+  const r = hljs.highlightAuto(code, ["python", "bash", "json", "latex", "powershell", "yaml"]);
+  return { html: r.value, lang: r.language ? (hljs.getLanguage(r.language)?.name ?? r.language) : "" };
+}
+
+const marked = new Marked({
+  gfm: true,
+  breaks: true,
+  renderer: {
+    code({ text, lang }) {
+      const { html, lang: name } = highlight(text, lang);
+      return `<pre data-lang="${escapeHtml(name)}"><code class="hljs">${html}</code></pre>\n`;
+    },
+  },
+});
 
 function math(tex: string, display: boolean): string {
   try {
@@ -42,7 +89,7 @@ export function renderMarkdown(src: string): string {
   html = html.replace(/(\d+)/g, (_, i) => stash[+i]);
 
   return DOMPurify.sanitize(html, {
-    ADD_ATTR: ["target", "aria-hidden"],
+    ADD_ATTR: ["target", "aria-hidden", "data-lang"],
     FORBID_TAGS: ["style", "form", "input", "button", "iframe"],
   });
 }

@@ -5,6 +5,7 @@
   import { api, mediaUrl, type ProjectSummary } from "#lib/api.ts";
   import { studio } from "#lib/studio.svelte.ts";
   import { enterProject, createAndEnter } from "#lib/navigation.ts";
+  import { exportZip, importZip } from "#lib/zip.ts";
   import templates from "#lib/templates.json";
   import Icon from "./Icon.svelte";
 
@@ -78,6 +79,16 @@
             <span class="tile accent">{#if busy === "new"}<span class="spin"></span>{:else}<Icon name="plus" size={15} />{/if}</span>
             <span class="text"><strong>New project</strong><span>Start from a blank scene</span></span>
           </button>
+          <button class="action" role="menuitem" disabled={!!busy} onclick={() => run("zip", async () => { const d = await importZip(); if (d) await enterProject(d); })}>
+            <span class="tile"><Icon name="export" size={15} /></span>
+            <span class="text"><strong>Import .zip…</strong><span>A project someone shared</span></span>
+          </button>
+          {#if studio.dir}
+            <button class="action" role="menuitem" disabled={!!busy} onclick={() => run("zipout", async () => { await exportZip(studio.dir!); })}>
+              <span class="tile"><Icon name="reveal" size={15} /></span>
+              <span class="text"><strong>Export this project as .zip…</strong><span>To share it or keep a copy</span></span>
+            </button>
+          {/if}
           <button class="action" role="menuitem" disabled={!!busy} onclick={openFolder}>
             <span class="tile"><Icon name="folder" size={15} /></span>
             <span class="text"><strong>Open folder…</strong><span>Any folder of Manim scenes</span></span>

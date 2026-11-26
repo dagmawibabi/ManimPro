@@ -11,6 +11,7 @@
   import Picker from "./Picker.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import LICENSES from "#lib/licenses.json";
+  import { PLUGINS, isInstalled, type PluginPreset } from "#lib/plugins.ts";
 
   let dialog: HTMLDialogElement;
   const v = $derived(settings.value);
@@ -88,7 +89,7 @@
   onMount(() => {
     dialog.showModal();
     for (const p of KEYED) api.apiKeyHint(p.id).then((h) => (keyHints[p.id] = h));
-    for (const p of SIGN_IN) if (!assistant.status[p.id]) assistant.refresh(p.id);
+    for (const p of SIGN_IN) if (!assistant.status[p.id]) check(p.id);
     loadQuota();
     models.load();
     // API-key providers run through OpenCode: make sure its status is known.
@@ -166,7 +167,64 @@
     }
   }
 
+  let installing = $state<string | null>(null);
+  let gl = $state<{ installed: boolean; version?: string | null } | null>(null);
+  let glBusy = $state(false);
+  let glError = $state<string | null>(null);
+  $effect(() => {
+    if (settings.section === "packages" && gl === null) api.manimglStatus().then((s) => (gl = s)).catch((e) => (glError = String(e)));
+  });
+  async function installGl() {
+    glBusy = true;
+    glError = null;
+    try {
+      const r = await api.manimglInstall();
+      if (!r.ok) glError = r.error ?? "The install failed.";
+      gl = await api.manimglStatus();
+      await api.restartWorker();
+    } catch (e) {
+      glError = String(e);
+    } finally {
+      glBusy = false;
+    }
+  }
+  async function removeGl() {
+    glBusy = true;
+    try {
+      await api.manimglRemove();
+      gl = await api.manimglStatus();
+    } catch (e) {
+      glError = String(e);
+    } finally {
+      glBusy = false;
+    }
+  }
+  function addGlStarter() {
+    return addStarter({ id: "gl", pkg: "manimgl", name: "ManimGL", about: "", starter: "gl_intro.py", url: "" });
+  }
+  let starterBusy = $state<string | null>(null);
+
+  /** Copies a plugin's starter scene into the open project and opens it. */
+  async function addStarter(pl: PluginPreset) {
+    if (!studio.dir) return;
+    starterBusy = pl.id;
+    pkgError = null;
+    try {
+      const dir = await api.pluginStartersDir();
+      const [path] = await studio.importFiles([`${dir}\\${pl.starter}`]);
+      await studio.scanFile(path);
+      await studio.openFile(path);
+      ui.mainTab = "code";
+      close();
+    } catch (e) {
+      pkgError = String(e);
+    } finally {
+      starterBusy = null;
+    }
+  }
+
   async function pkgAction(kind: "install" | "remove", name: string) {
+    installing = kind === "install" ? name : null;
     pkgBusy = kind === "install" ? "install" : name;
     pkgError = null;
     try {
@@ -187,6 +245,45 @@
   $effect(() => {
     if (settings.section === "packages" && pkgs === null) loadPackages();
   });
+
+  // "Check" on an account: shows progress until the assistant's status comes back.
+  let checking = $state<Record<string, boolean>>({});
+  async function check(id: Provider) {
+    checking[id] = true;
+    try {
+      await assistant.refresh(id);
+    } finally {
+      checking[id] = false;
+    }
+  }
+
+  // ------------------------------------------------------------ MCP for other apps
+  let share = $state<{ python: string; server: string } | null>(null);
+  let shareError = $state<string | null>(null);
+  let copied = $state<string | null>(null);
+  const shareJson = $derived(
+    share ? JSON.stringify({ mcpServers: { manimpro: { command: share.python, args: [share.server] } } }, null, 2) : "",
+  );
+  const shareCli = $derived(share ? `claude mcp add --scope user manimpro -- "${share.python}" "${share.server}"` : "");
+
+  async function toggleShare(on: boolean) {
+    shareError = null;
+    try {
+      share = await api.mcpShare(on);
+      set("shareMcp", on);
+    } catch (e) {
+      shareError = String(e);
+    }
+  }
+  onMount(() => {
+    if (settings.value.shareMcp) api.mcpShare(true).then((s) => (share = s)).catch((e) => (shareError = String(e)));
+  });
+
+  async function copyText(text: string, which: string) {
+    await navigator.clipboard.writeText(text);
+    copied = which;
+    setTimeout(() => (copied = null), 1400);
+  }
 
   async function chooseFolder() {
     const dir = await openDialog({ directory: true, title: "Default export folder" });
@@ -354,6 +451,7 @@
         </div>
         <div class="group">
           <h4>Help while typing</h4>
+          {@render toggle("pythonHelp", "Python help", "Completions for everything in scope, docs on hover, argument hints, Ctrl+click to jump to definitions, and warnings like undefined names.")}
           {@render toggle("manimCompletions", "Manim suggestions", "Suggests Manim classes, animations, colors and snippets.")}
           {@render toggle("bracketColors", "Color matching brackets")}
           {@render toggle("showWhitespace", "Show spaces and tabs", "Handy for spotting mixed indentation in Python.")}
@@ -379,7 +477,9 @@
                 {#if st?.installed && !st.signed_in}
                   <button class="btn primary" onclick={() => { assistant.setProvider(p.id); assistant.login(); }}>Sign in</button>
                 {/if}
-                <button class="btn ghost" onclick={() => assistant.refresh(p.id)}><Icon name="refresh" size={13} /> Check</button>
+                <button class="btn ghost" disabled={!!checking[p.id]} aria-busy={!!checking[p.id]} onclick={() => check(p.id)}>
+                  {#if checking[p.id]}<span class="spin"></span> Checking…{:else}<Icon name="refresh" size={13} /> Check{/if}
+                </button>
               </div>
             </div>
           {/each}
@@ -417,10 +517,36 @@
           {@render toggle("multiSceneByDefault", "Split longer videos into scenes", "Plans a storyboard, writes one Scene per idea and arranges them on the timeline.")}
           {@render toggle("autoRenderAfterAssistant", "Render after each reply", "Shows the result even when the assistant didn't render it itself.")}
           {@render toggle("showToolDetails", "Show tool details", "Tool output under each step. Errors always show.")}
+          {@render toggle("agentWeb", "Search the web", "Lets assistants look things up and read web pages, like the Manim docs.")}
+          {@render toggle("agentLocalFiles", "Read files on this computer", "Lets assistants read files outside the project, and copy ones a scene needs into it.")}
           <div class="row col">
             <span class="text"><span class="label">Standing instructions</span><span class="hint">Added to every request, e.g. "Use a dark navy background and the Inter font."</span></span>
             <textarea rows="3" value={v.extraInstructions} oninput={(e) => set("extraInstructions", e.currentTarget.value)} placeholder="Optional"></textarea>
           </div>
+        </div>
+        <div class="group">
+          <h4>Use ManimPro from other apps</h4>
+          <p class="note">
+            Claude Desktop, Claude Code, Cursor and other apps that support MCP can render scenes, look at frames and edit the
+            timeline of the project open here. ManimPro needs to be open while they work.
+          </p>
+          <label class="row">
+            <span class="text"><span class="label">Let other apps use ManimPro</span><span class="hint">Off by default. Any program running as you could connect while this is on.</span></span>
+            <input type="checkbox" class="switch" checked={v.shareMcp} onchange={(e) => toggleShare(e.currentTarget.checked)} />
+          </label>
+          {#if v.shareMcp && share}
+            <div class="row col">
+              <span class="text"><span class="label">Claude Desktop, Cursor and others</span><span class="hint">Add this to the app's MCP settings (for Claude Desktop: claude_desktop_config.json).</span></span>
+              <pre class="snippet">{shareJson}</pre>
+              <div class="actions"><button class="btn" onclick={() => copyText(shareJson, "json")}><Icon name="copy" size={13} /> {copied === "json" ? "Copied" : "Copy"}</button></div>
+            </div>
+            <div class="row col">
+              <span class="text"><span class="label">Claude Code</span><span class="hint">Run this once in a terminal.</span></span>
+              <pre class="snippet">{shareCli}</pre>
+              <div class="actions"><button class="btn" onclick={() => copyText(shareCli, "cli")}><Icon name="copy" size={13} /> {copied === "cli" ? "Copied" : "Copy"}</button></div>
+            </div>
+          {/if}
+          {#if shareError}<p class="error">{shareError}</p>{/if}
         </div>
         <div class="group">
           <h4>Model details</h4>
@@ -478,6 +604,52 @@
           </div>
         </div>
       {:else if settings.section === "packages"}
+        <div class="group">
+          <h4>Manim plugins</h4>
+          <p class="note">Ready-made extensions for Manim. Install one, then add its starter scene to the open project to see how it works.</p>
+          {#each PLUGINS as pl (pl.id)}
+            {@const have = pkgs ? isInstalled(pl, pkgs.map((p) => p.name)) : false}
+            <div class="row">
+              <span class="text">
+                <span class="label">{pl.name}{#if have}<span class="saved"> <Icon name="check" size={12} /> Installed</span>{/if}</span>
+                <span class="hint">{pl.about}{pl.needsLatex ? " Uses LaTeX." : ""}</span>
+              </span>
+              <div class="actions">
+                {#if have}
+                  <button class="btn" disabled={!studio.dir || starterBusy === pl.id} title={studio.dir ? "" : "Open a project first"} onclick={() => addStarter(pl)}>
+                    <Icon name="filePlus" size={13} /> {starterBusy === pl.id ? "Adding…" : "Add starter scene"}
+                  </button>
+                {:else}
+                  <button class="btn primary" disabled={!!pkgBusy} onclick={() => pkgAction("install", pl.pkg)}>{pkgBusy === "install" && installing === pl.pkg ? "Installing…" : "Install"}</button>
+                {/if}
+                <button class="btn ghost" title={pl.url} onclick={() => openUrl(pl.url)}><Icon name="link" size={13} /></button>
+              </div>
+            </div>
+          {/each}
+          <p class="note">manim-physics isn't offered: one of its parts doesn't install on this version of Python yet.</p>
+        </div>
+        <div class="group">
+          <h4>ManimGL</h4>
+          <div class="row">
+            <span class="text">
+              <span class="label">ManimGL{#if gl?.installed}<span class="saved"> <Icon name="check" size={12} /> Installed {gl.version ?? ""}</span>{/if}</span>
+              <span class="hint">
+                Grant Sanderson's own version of Manim, used for the 3Blue1Brown videos (the current version from GitHub). Files that
+                start with <code>from manimlib import *</code>, and files from the 3b1b/videos repository, render with it; everything
+                else keeps using Manim Community. It renders with your graphics card and installs into its own folder (about 400 MB).
+              </span>
+            </span>
+            <div class="actions">
+              {#if gl?.installed}
+                <button class="btn" disabled={!studio.dir || starterBusy === "gl"} onclick={addGlStarter}><Icon name="filePlus" size={13} /> Add starter scene</button>
+                <button class="btn ghost" disabled={glBusy} onclick={removeGl}>{glBusy ? "Removing…" : "Remove"}</button>
+              {:else}
+                <button class="btn primary" disabled={glBusy || gl === null} onclick={installGl}>{glBusy ? "Installing… (a few minutes)" : "Install"}</button>
+              {/if}
+            </div>
+          </div>
+          {#if glError}<p class="error pkg-error">{glError}</p>{/if}
+        </div>
         <div class="group">
           <h4>Add a package</h4>
           <p class="note">
@@ -995,6 +1167,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .spin {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--accent-soft);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .snippet {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    font-family: var(--mono, Consolas, monospace);
+    font-size: 11.5px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    user-select: text;
   }
   .pkg-error {
     margin: 8px 0 0;

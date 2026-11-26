@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { api, mediaUrl, type PendingAttachment, type ProjectSummary } from "#lib/api.ts";
+  import { api, mediaUrl, type PendingAttachment, type ProjectSummary, type UserTemplate } from "#lib/api.ts";
   import { studio } from "#lib/studio.svelte.ts";
   import { assistant } from "#lib/assistant.svelte.ts";
   import { ui } from "#lib/ui.svelte.ts";
@@ -9,6 +9,7 @@
   import templates from "#lib/templates.json";
   import PromptBox from "#lib/components/PromptBox.svelte";
   import HoverPreview from "#lib/components/HoverPreview.svelte";
+  import { exportZip, importZip } from "#lib/zip.ts";
   import ContextMenu, { type MenuItem } from "#lib/components/ContextMenu.svelte";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -49,7 +50,11 @@
     load();
   });
 
+  let mine = $state<UserTemplate[]>([]);
+  let notice = $state<string | null>(null);
+
   async function load() {
+    api.listUserTemplates().then((t) => (mine = t)).catch(() => {});
     try {
       const r = await api.listProjects();
       recent = r.recent.slice(0, 6);
@@ -79,6 +84,36 @@
     } finally {
       busy = null;
     }
+  }
+
+  async function useMine(t: UserTemplate) {
+    busy = t.id;
+    failure = null;
+    try {
+      const dir = await newProject(t.title, t.id);
+      await enter(dir, { render: true });
+    } catch (e) {
+      failure = String(e);
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function saveTemplate(p: ProjectSummary) {
+    failure = null;
+    try {
+      await api.saveUserTemplate(p.dir, p.name);
+      notice = `Saved “${p.name}” to Your templates.`;
+      mine = await api.listUserTemplates();
+    } catch (e) {
+      failure = String(e);
+    }
+  }
+
+  async function removeMine(t: UserTemplate) {
+    if (!(await ask(`Delete the template “${t.title}”? Projects made from it stay as they are.`, { title: "Delete template", kind: "warning" }))) return;
+    await api.deleteUserTemplate(t.id);
+    mine = await api.listUserTemplates();
   }
 
   async function useTemplate(t: Template) {
@@ -121,6 +156,8 @@
         "separator",
         { label: "Rename", icon: "pencil", action: () => (renaming = { dir: p.dir, value: p.name }) },
         { label: "Show in folder", icon: "reveal", action: () => revealItemInDir(p.dir) },
+        { label: "Save as template", icon: "copy", hint: "Start new projects from it", action: () => saveTemplate(p) },
+        { label: "Export as .zip…", icon: "export", hint: "Code, assets and timeline; renders are left out", action: () => exportZip(p.dir).catch((e) => (failure = String(e))) },
         ...(fromRecent ? [{ label: "Remove from Recent", icon: "close", action: () => forget(p) } as MenuItem] : []),
         "separator",
         { label: "Delete project", icon: "trash", danger: true, action: () => removeProject(p) },
@@ -164,6 +201,16 @@
   function focusSelect(el: HTMLInputElement) {
     el.focus();
     el.select();
+  }
+
+  async function openZip() {
+    failure = null;
+    try {
+      const dir = await importZip();
+      if (dir) await enter(dir);
+    } catch (e) {
+      failure = String(e);
+    }
   }
 
   async function openFolder() {
@@ -231,6 +278,7 @@
       {#if studio.worker.status === "ready" && !studio.worker.latex}
         <button class="btn" onclick={() => (ui.latexOpen = true)}><Icon name="sigma" size={13} /> Install LaTeX</button>
       {/if}
+      <button class="btn" onclick={openZip} title="Open a project someone shared as a .zip"><Icon name="export" size={14} /> Import .zip</button>
       <button class="btn" onclick={openFolder}><Icon name="folder" size={14} /> Open folder</button>
       <WindowControls />
     </div>
@@ -272,6 +320,7 @@
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
       </button>
       {#if failure}<p class="failure">{failure}</p>{/if}
+      {#if notice}<p class="notice">{notice}</p>{/if}
     </section>
 
     {#if recent.length}
@@ -280,6 +329,30 @@
         <div class="projects recent">
           {#each recent as p (p.dir)}
             {@render projectCard(p, true, `${p.scenes} ${p.scenes === 1 ? "scene" : "scenes"}`)}
+          {/each}
+        </div>
+      </section>
+    {/if}
+
+    {#if mine.length}
+      <section>
+        <div class="section-head"><h2>Your templates</h2></div>
+        <div class="templates">
+          {#each mine as t (t.id)}
+            <div class="mine-wrap">
+              <button class="template" disabled={busy !== null} onclick={() => useMine(t)}>
+                <div class="thumb">
+                  {#if t.thumbnail}<img src={mediaUrl(t.thumbnail, t.created)} alt="" loading="lazy" />{:else}<Icon name="film" size={22} />{/if}
+                  {#if busy === t.id}<span class="busy"><span class="spin"></span></span>{/if}
+                </div>
+                <div class="meta">
+                  <span class="name">{t.title}</span>
+                  {#if t.description}<span class="sub">{t.description}</span>{/if}
+                  <span class="facts">{t.scenes.length} {t.scenes.length === 1 ? "scene" : "scenes"}</span>
+                </div>
+              </button>
+              <button class="more" aria-label="Delete template {t.title}" title="Delete template" onclick={() => removeMine(t)}><Icon name="trash" size={14} /></button>
+            </div>
           {/each}
         </div>
       </section>
@@ -628,9 +701,21 @@
     color: var(--muted);
     font-style: italic;
   }
-  .project-wrap {
+  .project-wrap,
+  .mine-wrap {
     position: relative;
     min-width: 0;
+  }
+  .mine-wrap .template {
+    width: 100%;
+  }
+  .mine-wrap:hover .more {
+    opacity: 1;
+  }
+  .notice {
+    margin: 12px 0 0;
+    color: var(--muted);
+    font-size: 13px;
   }
   .project-wrap .project {
     width: 100%;

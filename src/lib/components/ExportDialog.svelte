@@ -21,6 +21,7 @@
   /** "" = the whole timeline, else one scene's key. */
   let what = $state<string>("");
   let captionMode = $state<"off" | "srt" | "burn">(studio.captions.length ? "srt" : "off");
+  let transparent = $state(false);
   const scenes = $derived(
     studio.files.flatMap((f) => (studio.scenes[f] ?? []).map((s) => ({ key: sceneKey(f, s.name), name: s.name, file: basename(f) }))),
   );
@@ -79,6 +80,7 @@
         only: what || null,
         burnCaptions: captionMode === "burn",
         srt: captionMode !== "off",
+        transparent: transparent && (format === "mov" || format === "webm"),
       });
       done = r.output;
       if (settings.value.revealAfterExport) revealItemInDir(r.output);
@@ -128,6 +130,18 @@
         </select>
       </label>
       <p class="note dims">{fmt.note}</p>
+      {#if format === "mov" || format === "webm"}
+        <label class="check">
+          <input type="checkbox" bind:checked={transparent} disabled={running} />
+          <span>Transparent background</span>
+        </label>
+        {#if transparent}
+          <p class="note dims">
+            Scenes render without a background ({format === "mov" ? "ProRes 4444" : "VP9"} with alpha), for laying over other
+            footage. Gaps between clips are see-through too.
+          </p>
+        {/if}
+      {/if}
       <label>
         <span>Resolution</span>
         <select bind:value={presetId} disabled={running}>
@@ -185,6 +199,13 @@
 </dialog>
 
 <style>
+  .check {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
   dialog {
     width: 440px;
     padding: 0;

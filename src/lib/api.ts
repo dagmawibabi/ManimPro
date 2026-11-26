@@ -2,7 +2,14 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export type SceneInfo = { name: string; line: number };
-export type WorkerError = { message: string; line?: number | null; traceback?: string; cancelled?: boolean };
+export type WorkerError = {
+  message: string;
+  line?: number | null;
+  traceback?: string;
+  cancelled?: boolean;
+  /** A fix the app can offer, e.g. "fetch_3b1b" (download 3Blue1Brown's shared code). */
+  action?: string | null;
+};
 
 export type ProjectInfo = {
   dir: string;
@@ -22,6 +29,9 @@ export type RenderResult = {
   /** Filmstrip of evenly spaced frames (for timeline clips). */
   strip?: string;
   stripFrames?: number;
+  /** Lines spoken with self.voiceover(...), in scene seconds. */
+  narration?: { start: number; end: number; text: string }[];
+  warning?: string;
   duration: number;
   width: number;
   height: number;
@@ -43,6 +53,8 @@ export type ProjectSummary = {
   thumbnail: string | null;
   preview: string | null;
 };
+
+export type UserTemplate = { id: string; title: string; description: string; thumbnail: string | null; scenes: string[]; created: number };
 
 export type MusicTrack = { id: string; title: string; mood: string; bpm: number; duration: number; file: string; path: string };
 
@@ -141,6 +153,16 @@ export const api = {
   checkpointChanges: (project: string, id: string) => invoke<FileChange[]>("checkpoint_changes", { project, id }),
   checkpointRestore: (project: string, id: string) => invoke<FileChange[]>("checkpoint_restore", { project, id }),
   musicLibrary: () => invoke<{ license: string; tracks: MusicTrack[] }>("music_library"),
+  pluginStartersDir: () => invoke<string>("plugin_starters_dir"),
+  exportProjectZip: (project: string, dest: string, includeRenders = false) =>
+    invoke<{ path: string; files: number; bytes: number }>("export_project_zip", { project, dest, includeRenders }),
+  importProjectZip: (zipPath: string) => invoke<string>("import_project_zip", { zipPath }),
+  saveUserTemplate: (project: string, name: string, description = "") => invoke<string>("save_user_template", { project, name, description }),
+  listUserTemplates: () => invoke<UserTemplate[]>("list_user_templates"),
+  deleteUserTemplate: (id: string) => invoke<void>("delete_user_template", { id }),
+  manimglStatus: () => invoke<{ installed: boolean; version?: string | null }>("manimgl_status"),
+  manimglInstall: () => invoke<PackagesResult>("manimgl_install"),
+  manimglRemove: () => invoke<void>("manimgl_remove"),
   packagesList: () => invoke<PackagesResult>("packages_list"),
   packagesInstall: (spec: string) => invoke<PackagesResult>("packages_install", { spec }),
   packagesRemove: (name: string) => invoke<PackagesResult>("packages_remove", { name }),
@@ -160,7 +182,10 @@ export const api = {
     session: string | null;
     instructions: string | null;
     files: string[];
+    web: boolean;
+    localFiles: boolean;
   }) => invoke<number>("agent_run", a),
+  mcpShare: (enable: boolean) => invoke<{ python: string; server: string } | null>("mcp_share", { enable }),
   saveAttachment: (projectDir: string, source: string) => invoke<string>("save_attachment", { projectDir, source }),
   saveAttachmentData: (projectDir: string, name: string, data: string) =>
     invoke<string>("save_attachment_data", { projectDir, name, data }),
