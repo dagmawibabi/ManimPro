@@ -1,0 +1,4 @@
+# Read from the source tree in dev builds; changing them needs no Rust rebuild.
+runtime/
+python/
+templates/

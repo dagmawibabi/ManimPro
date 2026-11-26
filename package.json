@@ -1,0 +1,39 @@
+{
+  "name": "manimpro",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri",
+    "setup:runtime": "powershell -ExecutionPolicy Bypass -File scripts/setup-runtime.ps1",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build --config src-tauri/tauri.bundle.conf.json",
+    "setup:latex": "powershell -ExecutionPolicy Bypass -File scripts/setup-latex.ps1"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^4.0.1",
+    "@sveltejs/kit": "^3.4.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.2",
+    "@tauri-apps/cli": "^2.12.6",
+    "svelte": "^5.59.1",
+    "svelte-check": "^4.7.8",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@tauri-apps/api": "^2.12.5",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-opener": "^2.7.3",
+    "dompurify": "^3.5.0",
+    "katex": "^0.19.1",
+    "marked": "^18.3.0",
+    "monaco-editor": "^0.58.0"
+  },
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  }
+}

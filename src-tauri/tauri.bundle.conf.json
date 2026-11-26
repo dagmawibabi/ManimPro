@@ -1,0 +1,18 @@
+{
+  "bundle": {
+    "resources": {
+      "python/": "worker/",
+      "templates/": "templates/",
+      "runtime/": "runtime/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

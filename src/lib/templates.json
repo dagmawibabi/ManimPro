@@ -1,0 +1,246 @@
+[
+  {
+    "id": "blank",
+    "title": "Blank project",
+    "description": "An empty scene to start from.",
+    "category": "Basics",
+    "latex": false,
+    "scenes": [
+      "MyScene"
+    ],
+    "thumbnail": null,
+    "duration": null
+  },
+  {
+    "id": "calculus-area",
+    "title": "Area under a curve",
+    "description": "Rectangles shrink toward the exact area, then the area function reveals dA/dx = f(x). 3 scenes, inspired by Essence of Calculus.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Question",
+      "RiemannSums",
+      "AreaGrows"
+    ],
+    "thumbnail": "/templates/calculus-area.jpg",
+    "duration": 33.5
+  },
+  {
+    "id": "fourier-square-wave",
+    "title": "Fourier series: a square wave from sines",
+    "description": "Add sine waves one by one, then watch spinning circles draw the wave. 2 scenes, inspired by \u201cBut what is a Fourier series?\u201d",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "AddingSines",
+      "RotatingCircles"
+    ],
+    "thumbnail": "/templates/fourier-square-wave.jpg",
+    "duration": 34.5
+  },
+  {
+    "id": "linear-transform",
+    "title": "Linear transformations",
+    "description": "Basis vectors, a shear, a rotation and the determinant as area. 4 scenes, inspired by Essence of Linear Algebra.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "BasisVectors",
+      "Shear",
+      "Rotation",
+      "Determinant"
+    ],
+    "thumbnail": "/templates/linear-transform.jpg",
+    "duration": 27.5
+  },
+  {
+    "id": "euler-formula",
+    "title": "Euler's formula: e^i\u03c0 = \u22121",
+    "description": "Multiplying by i as a quarter turn, then e^i\u03b8 walking the unit circle. 2 scenes.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Multiplying",
+      "AroundTheCircle"
+    ],
+    "thumbnail": "/templates/euler-formula.jpg",
+    "duration": 22.0
+  },
+  {
+    "id": "taylor-series",
+    "title": "Taylor series of sin(x)",
+    "description": "Polynomials of growing degree hug the sine curve over a wider range. 2 scenes.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Idea",
+      "Approximations"
+    ],
+    "thumbnail": "/templates/taylor-series.jpg",
+    "duration": 24.5
+  },
+  {
+    "id": "pythagoras",
+    "title": "Pythagorean theorem, by rearrangement",
+    "description": "The same four triangles in one square, arranged two ways. 2 scenes.",
+    "category": "Math",
+    "latex": false,
+    "scenes": [
+      "Setup",
+      "Rearrange"
+    ],
+    "thumbnail": "/templates/pythagoras.jpg",
+    "duration": 23.6
+  },
+  {
+    "id": "bayes-theorem",
+    "title": "Bayes' theorem as areas",
+    "description": "Librarian or farmer? Prior odds and evidence drawn as areas. 4 scenes, inspired by 3Blue1Brown's Bayes video.",
+    "category": "Probability",
+    "latex": false,
+    "scenes": [
+      "TheQuestion",
+      "Population",
+      "Evidence",
+      "Answer"
+    ],
+    "thumbnail": "/templates/bayes-theorem.jpg",
+    "duration": 32.1
+  },
+  {
+    "id": "central-limit",
+    "title": "Central limit theorem",
+    "description": "Averages of more and more dice pile up into a bell curve. 2 scenes.",
+    "category": "Probability",
+    "latex": false,
+    "scenes": [
+      "OneDie",
+      "AddingDice"
+    ],
+    "thumbnail": "/templates/central-limit.jpg",
+    "duration": 24.7
+  },
+  {
+    "id": "binary-search",
+    "title": "Binary search",
+    "description": "L, M and R pointers halve the range until the target is found. Edit the list and target. 2 scenes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "Intro",
+      "Search"
+    ],
+    "thumbnail": "/templates/binary-search.jpg",
+    "duration": 25.2
+  },
+  {
+    "id": "neural-network",
+    "title": "Neural network",
+    "description": "Signals pulse forward through a small network.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "NeuralNetwork"
+    ],
+    "thumbnail": "/templates/neural-network.jpg",
+    "duration": 10.7
+  },
+  {
+    "id": "graph-search",
+    "title": "Breadth-first search",
+    "description": "A search spreads through a graph, layer by layer.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "BreadthFirst"
+    ],
+    "thumbnail": "/templates/graph-search.jpg",
+    "duration": 7.2
+  },
+  {
+    "id": "sorting",
+    "title": "Bubble sort",
+    "description": "Bars compare and swap until the list is sorted.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "BubbleSort"
+    ],
+    "thumbnail": "/templates/sorting.jpg",
+    "duration": 18.7
+  },
+  {
+    "id": "code-walkthrough",
+    "title": "Code walkthrough",
+    "description": "A code snippet highlighted line by line with notes.",
+    "category": "Computer science",
+    "latex": false,
+    "scenes": [
+      "CodeWalkthrough"
+    ],
+    "thumbnail": "/templates/code-walkthrough.jpg",
+    "duration": 7.8
+  },
+  {
+    "id": "explainer",
+    "title": "Three-part explainer",
+    "description": "Hook, key idea and outro: a ready-made story you can re-word.",
+    "category": "Storytelling",
+    "latex": false,
+    "scenes": [
+      "Hook",
+      "KeyIdea",
+      "Outro"
+    ],
+    "thumbnail": "/templates/explainer.jpg",
+    "duration": 13.5
+  },
+  {
+    "id": "logo-reveal",
+    "title": "Logo reveal",
+    "description": "Tiles fly in, lock into a mark and the brand name writes on.",
+    "category": "Motion design",
+    "latex": false,
+    "scenes": [
+      "LogoReveal"
+    ],
+    "thumbnail": "/templates/logo-reveal.jpg",
+    "duration": 7.0
+  },
+  {
+    "id": "surface-3d",
+    "title": "3D ripple surface",
+    "description": "A rippling surface with a slowly orbiting camera.",
+    "category": "3D",
+    "latex": false,
+    "scenes": [
+      "Ripple3D"
+    ],
+    "thumbnail": "/templates/surface-3d.jpg",
+    "duration": 8.5
+  },
+  {
+    "id": "pendulum",
+    "title": "Damped pendulum",
+    "description": "A simulated pendulum swings down and leaves a fading trail.",
+    "category": "Physics",
+    "latex": false,
+    "scenes": [
+      "Pendulum"
+    ],
+    "thumbnail": "/templates/pendulum.jpg",
+    "duration": 8.0
+  },
+  {
+    "id": "equation-steps",
+    "title": "Solve an equation",
+    "description": "Step-by-step algebra where matching terms glide into place (MathTex).",
+    "category": "Math",
+    "latex": true,
+    "scenes": [
+      "SolveEquation"
+    ],
+    "thumbnail": "/templates/equation-steps.jpg",
+    "duration": 9.9
+  }
+]
